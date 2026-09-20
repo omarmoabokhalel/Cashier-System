@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "validate:db": "node scripts/validate_schema.cjs",
     "seed": "node scripts/seed_demo_data.cjs",

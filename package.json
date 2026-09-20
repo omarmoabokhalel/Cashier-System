@@ -1,0 +1,40 @@
+{
+  "name": "clothing-store-pos",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "validate:db": "node scripts/validate_schema.cjs",
+    "seed": "node scripts/seed_demo_data.cjs",
+    "test:security": "node scripts/test_auth_security.cjs",
+    "test:inventory": "node scripts/test_inventory_flow.cjs",
+    "test:sales": "node scripts/test_sales_system.cjs",
+    "test:returns": "node scripts/test_returns_exchanges.cjs",
+    "test:customers": "node scripts/test_customers_loyalty_coupons.cjs",
+    "test:register": "node scripts/test_suppliers_purchases_register.cjs",
+    "test:reports": "node scripts/test_dashboard_reports.cjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "clsx": "^2.1.0",
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tailwind-merge": "^2.2.1",
+    "zustand": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.17",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.4"
+  }
+}

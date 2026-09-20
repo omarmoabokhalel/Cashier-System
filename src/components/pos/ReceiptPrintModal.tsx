@@ -8,7 +8,8 @@ interface ReceiptPrintModalProps {
   isOpen: boolean;
   onClose: () => void;
   saleData: {
-    invoiceNumber: string;
+    invoiceNumber: string; 
+    
     createdAt: string;
     storeName?: string;
     branchName?: string;

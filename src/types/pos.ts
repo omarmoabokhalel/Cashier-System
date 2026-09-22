@@ -17,6 +17,7 @@ export interface CartItem {
   discountAmount: number; // Flat discount per item
   quantity: number;
   stockQty: number;
+  minSellingPrice?: number;
   imageUrl?: string | null;
   taxRate?: number;
 }

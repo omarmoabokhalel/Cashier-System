@@ -86,8 +86,8 @@ export const ExpensesShell: React.FC = () => {
   const handleRecordExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     const amountVal = parseFloat(formData.amount);
-    if (!amountVal || amountVal <= 0 || !formData.description.trim()) {
-      showToast('warning', 'بيانات غير مكتملة', 'يرجى إدخال مبلغ صحيح ووصف للمصروف');
+    if (!amountVal || amountVal <= 0 || !formData.category) {
+      showToast('warning', 'بيانات غير مكتملة', 'يرجى اختيار تصنيف المصروف وإدخال المبلغ');
       return;
     }
 

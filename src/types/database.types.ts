@@ -118,9 +118,12 @@ export interface Database {
           name_ar: string
           name_en: string
           description: string | null
+          product_code: string | null
+          barcode: string | null
           image_url: string | null
           base_price: number
           cost_price: number
+          min_selling_price: number | null
           tax_rate: number
           min_stock_alert: number
           is_active: boolean
@@ -141,6 +144,7 @@ export interface Database {
           cost_price: number
           selling_price: number
           discount_price: number | null
+          min_selling_price: number | null
           image_url: string | null
           is_active: boolean
           deleted_at: string | null

@@ -25,6 +25,7 @@ interface ProductFormModalProps {
   onSaved: () => void;
   initialProduct?: any;
   isDuplicate?: boolean;
+  isFromPurchaseOrder?: boolean;
 }
 
 const generateUUID = (): string => {
@@ -43,9 +44,12 @@ const isValidUUID = (str: string) =>
 
 const sanitizeTaxonomyStorage = (key: string) => {
   try {
-    const cached = JSON.parse(localStorage.getItem(key) || '[]');
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
     let updated = false;
-    const sanitized = cached.map((item: any) => {
+    const sanitized = parsed.map((item: any) => {
       if (!item.id || !isValidUUID(item.id)) {
         item.id = generateUUID();
         updated = true;
@@ -67,6 +71,7 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
   onSaved,
   initialProduct,
   isDuplicate = false,
+  isFromPurchaseOrder = false,
 }) => {
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -75,10 +80,14 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
   const [nameAr, setNameAr] = useState('');
   const [nameEn, setNameEn] = useState('');
   const [description, setDescription] = useState('');
+  const [productCode, setProductCode] = useState('');
+  const [barcode, setBarcode] = useState('');
+  const [stockQty, setStockQty] = useState(isFromPurchaseOrder ? '0' : '10');
   const [categoryId, setCategoryId] = useState('');
   const [brandId, setBrandId] = useState('');
   const [basePrice, setBasePrice] = useState('');
   const [costPrice, setCostPrice] = useState('');
+  const [minSellingPrice, setMinSellingPrice] = useState('');
   const [minStockAlert, setMinStockAlert] = useState('5');
   const [isActive, setIsActive] = useState(true);
 
@@ -86,22 +95,20 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
 
-  // Taxonomy Lists with Defaults
+  // Quick Inline Add Category/Brand States
   const [categories, setCategories] = useState<any[]>([]);
   const [brands, setBrands] = useState<any[]>([]);
-  const [sizes, setSizes] = useState<any[]>([]);
   const [colors, setColors] = useState<any[]>([]);
+  const [sizes, setSizes] = useState<any[]>([]);
 
-  // Selected for Generator
   const [selectedColorIds, setSelectedColorIds] = useState<string[]>([]);
   const [selectedSizeIds, setSelectedSizeIds] = useState<string[]>([]);
-
-  // Variants Matrix List
   const [variants, setVariants] = useState<GeneratedVariant[]>([]);
 
-  // Quick Add Sub-Modals State
+  // Modal State for Quick Add
   const [quickAddType, setQuickAddType] = useState<'category' | 'brand' | 'color' | 'size' | null>(null);
   const [quickNameAr, setQuickNameAr] = useState('');
+  const [quickNameEn, setQuickNameEn] = useState('');
   const [quickCode, setQuickCode] = useState('');
   const [quickHex, setQuickHex] = useState('#000000');
   const [savingQuick, setSavingQuick] = useState(false);
@@ -181,10 +188,14 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
         setNameAr(isDuplicate ? `${initialProduct.name_ar} (نسخة)` : initialProduct.name_ar);
         setNameEn(initialProduct.name_en || '');
         setDescription(initialProduct.description || '');
+        setProductCode(initialProduct.product_code || initialProduct.product_variants?.[0]?.sku || '');
+        setBarcode(initialProduct.barcode || initialProduct.product_variants?.[0]?.barcode || '');
+        setStockQty(initialProduct.product_variants?.[0]?.branch_variant_stock?.[0]?.quantity?.toString() || '10');
         setCategoryId(initialProduct.category_id || '');
         setBrandId(initialProduct.brand_id || '');
         setBasePrice(initialProduct.base_price?.toString() || '0');
         setCostPrice(initialProduct.cost_price?.toString() || '0');
+        setMinSellingPrice(initialProduct.min_selling_price?.toString() || initialProduct.base_price?.toString() || '0');
         setMinStockAlert(initialProduct.min_stock_alert?.toString() || '5');
         setIsActive(initialProduct.is_active ?? true);
         setImageUrl(initialProduct.image_url || null);
@@ -192,27 +203,32 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
         if (initialProduct.product_variants) {
           const mappedVariants: GeneratedVariant[] = initialProduct.product_variants.map((pv: any) => ({
             id: isDuplicate ? undefined : pv.id,
-            sizeId: pv.size_id,
-            sizeCode: pv.sizes?.code || 'Std',
-            colorId: pv.color_id,
-            colorNameAr: pv.colors?.name_ar || 'عام',
-            colorHex: pv.colors?.hex_code || '#000000',
+            sizeId: pv.size_id || null,
+            sizeCode: pv.sizes?.code || '',
+            colorId: pv.color_id || null,
+            colorNameAr: pv.colors?.name_ar || '',
+            colorHex: pv.colors?.hex_code || '',
             sku: isDuplicate ? `${pv.sku}-COPY` : pv.sku,
             barcode: isDuplicate ? `6281${Math.floor(10000000 + Math.random() * 90000000)}` : pv.barcode,
             costPrice: Number(pv.cost_price),
             sellingPrice: Number(pv.selling_price),
-            stockQty: pv.branch_variant_stock?.[0]?.quantity || 10,
+            stockQty: pv.branch_variant_stock?.[0]?.quantity ?? parseInt(stockQty) ?? 10,
           }));
           setVariants(mappedVariants);
         }
       } else {
+        const defaultCode = `100${Math.floor(10 + Math.random() * 90)}`;
         setNameAr('');
         setNameEn('');
         setDescription('');
+        setProductCode(defaultCode);
+        setBarcode(`62810000${defaultCode}`);
+        setStockQty('10');
         setCategoryId('');
         setBrandId('');
-        setBasePrice('89.00');
-        setCostPrice('35.00');
+        setBasePrice('100');
+        setCostPrice('60');
+        setMinSellingPrice('85');
         setMinStockAlert('5');
         setIsActive(true);
         setImageUrl(null);
@@ -436,14 +452,23 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
         }
       }
 
+      const finalProductCode = productCode.trim() || `PRD-${Math.floor(1000 + Math.random() * 9000)}`;
+      const finalBarcode = barcode.trim() || (finalProductCode.length >= 6 ? finalProductCode : `62810000${finalProductCode.padStart(4, '0')}`);
+      const finalCost = parseFloat(costPrice) || 0;
+      const finalSelling = parseFloat(basePrice) || 0;
+      const finalMinSelling = parseFloat(minSellingPrice) || finalSelling;
+
       const productPayload = {
         name_ar: nameAr.trim(),
-        name_en: nameEn.trim() || null,
+        name_en: nameEn.trim() || nameAr.trim(),
         description: description.trim() || null,
+        product_code: finalProductCode,
+        barcode: finalBarcode,
         category_id: categoryId || null,
         brand_id: brandId || null, // Optional
-        base_price: parseFloat(basePrice) || 0,
-        cost_price: parseFloat(costPrice) || 0,
+        base_price: finalSelling,
+        cost_price: finalCost,
+        min_selling_price: finalMinSelling,
         min_stock_alert: parseInt(minStockAlert) || 5,
         is_active: isActive,
         image_url: imageUrl,
@@ -510,12 +535,14 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
           let variantId = v.id;
           const variantPayload = {
             product_id: productId,
-            size_id: v.sizeId,
-            color_id: v.colorId,
-            sku: v.sku,
-            barcode: v.barcode,
-            cost_price: v.costPrice,
-            selling_price: v.sellingPrice,
+            size_id: v.sizeId || null,
+            color_id: v.colorId || null,
+            sku: v.sku || finalProductCode,
+            barcode: v.barcode || finalBarcode,
+            cost_price: v.costPrice || finalCost,
+            selling_price: v.sellingPrice || finalSelling,
+            discount_price: finalMinSelling,
+            min_selling_price: finalMinSelling,
             is_active: true,
             updated_at: new Date().toISOString(),
           };
@@ -534,73 +561,55 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
             variantId = newV.id;
           }
 
-          await (supabase.from('branch_variant_stock') as any).upsert(
+          const qtyToSave = isFromPurchaseOrder
+            ? 0
+            : (v.stockQty !== undefined && v.stockQty !== null && !isNaN(Number(v.stockQty))
+              ? Number(v.stockQty)
+              : (parseInt(stockQty) || 0));
+
+          const { error: sErr } = await (supabase.from('branch_variant_stock') as any).upsert(
             {
               branch_id: branchId,
               variant_id: variantId,
-              quantity: v.stockQty,
+              quantity: qtyToSave,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'branch_id,variant_id' }
           );
+          if (sErr) throw sErr;
         }
       } else {
-        // Create standard default variant if none generated
-        const targetColor = colors[0] || {
-          id: 'cl000000-0000-0000-0000-000000000001',
-          name_ar: 'أسود',
-          code: 'BLK',
-          hex_code: '#000000',
-        };
-        const targetSize = sizes[0] || {
-          id: 's0000000-0000-0000-0000-000000000001',
-          name_ar: 'صغير (S)',
-          code: 'S',
-          sort_order: 1,
-        };
-
-        await (supabase.from('colors') as any).upsert(
-          {
-            id: targetColor.id,
-            name_ar: targetColor.name_ar,
-            name_en: targetColor.name_en || targetColor.name_ar,
-            code: targetColor.code || 'BLK',
-            hex_code: targetColor.hex_code || '#000000',
-          },
-          { onConflict: 'id' }
-        ).catch(() => {});
-
-        await (supabase.from('sizes') as any).upsert(
-          {
-            id: targetSize.id,
-            name_ar: targetSize.name_ar,
-            name_en: targetSize.name_en || targetSize.code,
-            code: targetSize.code || 'S',
-            sort_order: targetSize.sort_order || 1,
-          },
-          { onConflict: 'id' }
-        ).catch(() => {});
-
-        const defaultSku = `${(nameAr.slice(0, 3) || 'PRD').toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
-        const defaultBarcode = `6281${Math.floor(10000000 + Math.random() * 90000000)}`;
-
-        const { data: stdV } = await (supabase.from('product_variants') as any).insert({
+        // Create standard default variant with no size or color if none selected
+        const { data: stdV, error: stdVErr } = await (supabase.from('product_variants') as any).insert({
           product_id: productId,
-          size_id: targetSize.id,
-          color_id: targetColor.id,
-          sku: defaultSku,
-          barcode: defaultBarcode,
-          cost_price: parseFloat(costPrice) || 0,
-          selling_price: parseFloat(basePrice) || 0,
+          size_id: null,
+          color_id: null,
+          sku: finalProductCode,
+          barcode: finalBarcode,
+          cost_price: finalCost,
+          selling_price: finalSelling,
+          discount_price: finalMinSelling,
+          min_selling_price: finalMinSelling,
           is_active: true,
         }).select('id').single();
 
+        if (stdVErr) {
+          console.error('Error inserting default variant:', stdVErr);
+          throw stdVErr;
+        }
+
         if (stdV) {
-          await (supabase.from('branch_variant_stock') as any).upsert({
+          const { error: stockErr } = await (supabase.from('branch_variant_stock') as any).upsert({
             branch_id: branchId,
             variant_id: stdV.id,
-            quantity: 10,
+            quantity: isFromPurchaseOrder ? 0 : (parseInt(stockQty) || 0),
+            updated_at: new Date().toISOString(),
           }, { onConflict: 'branch_id,variant_id' });
+
+          if (stockErr) {
+            console.error('Error upserting branch stock:', stockErr);
+            throw stockErr;
+          }
         }
       }
 
@@ -609,7 +618,7 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
       onClose();
     } catch (err: any) {
       console.error('Error saving product:', err);
-      showToast('error', 'تعذر حفظ المنتج', err.message || 'تأكد من عدم تكرار رمز SKU أو الباركود');
+      showToast('error', 'تعذر حفظ المنتج', err.message || 'تأكد من عدم تكرار رمز الكود أو الباركود');
     } finally {
       setLoading(false);
     }
@@ -628,12 +637,12 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
           <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-4">
             <h3 className="text-xs font-bold text-indigo-400 flex items-center gap-1.5 border-b border-slate-800 pb-2">
               <Package className="w-4 h-4" />
-              <span>البيانات الأساسية للمنتج والتسعير</span>
+              <span>البيانات الأساسية للمنتج والكود والتسعير</span>
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <Input
-                label="اسم المنتج (بالعربية) *"
+                label="اسم المنتج *"
                 placeholder="مثال: قميص قطن كلاسيكي"
                 value={nameAr}
                 onChange={(e) => setNameAr(e.target.value)}
@@ -641,18 +650,76 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                 autoFocus
               />
               <Input
-                label="الاسم الإنجليزي / الكود الداخلي"
-                placeholder="Classic Cotton Shirt"
-                value={nameEn}
-                onChange={(e) => setNameEn(e.target.value)}
+                label="كود المنتج *"
+                placeholder="مثال: 1001"
+                value={productCode}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setProductCode(val);
+                  if (val.trim()) {
+                    setBarcode(val.trim().length >= 6 ? val.trim() : `62810000${val.trim().padStart(4, '0')}`);
+                  }
+                }}
+                required
+              />
+              <Input
+                label="الباركود (يولّد تلقائياً من الكود) *"
+                placeholder="مثال: 628100001001"
+                value={barcode}
+                onChange={(e) => setBarcode(e.target.value)}
+                required
               />
             </div>
 
-            {/* Category & Brand Dropdowns with Quick Add */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Pricing & Stock */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+              <Input
+                label="الكمية المتاحة بالمخزن *"
+                type="number"
+                value={stockQty}
+                onChange={(e) => setStockQty(e.target.value)}
+                required
+              />
+              <Input
+                label="سعر الجملة / التكلفة (ج.م) *"
+                type="number"
+                step="0.01"
+                value={costPrice}
+                onChange={(e) => setCostPrice(e.target.value)}
+                required
+              />
+              <Input
+                label="سعر البيع (ج.م) *"
+                type="number"
+                step="0.01"
+                value={basePrice}
+                onChange={(e) => {
+                  setBasePrice(e.target.value);
+                  if (!minSellingPrice) setMinSellingPrice(e.target.value);
+                }}
+                required
+              />
+              <Input
+                label="أقل سعر مسموح للبيع (ج.م) *"
+                type="number"
+                step="0.01"
+                value={minSellingPrice}
+                onChange={(e) => setMinSellingPrice(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Input
+                label="حد تنبيه نقص المخزون"
+                type="number"
+                value={minStockAlert}
+                onChange={(e) => setMinStockAlert(e.target.value)}
+              />
+
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-slate-300 font-semibold">الفئة / التصنيف الرئيسي</label>
+                  <label className="text-slate-300 font-semibold">الفئة (اختياري)</label>
                   <button
                     type="button"
                     onClick={() => setQuickAddType('category')}
@@ -662,7 +729,10 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                   </button>
                 </div>
                 <Select
-                  options={categories.map((c) => ({ value: c.id, label: c.name_ar }))}
+                  options={[
+                    { value: '', label: 'بدون فئة / غير محدد (اختياري)' },
+                    ...categories.map((c) => ({ value: c.id, label: c.name_ar })),
+                  ]}
                   value={categoryId}
                   onChange={(e) => setCategoryId(e.target.value)}
                   placeholder="اختر التصنيف..."
@@ -687,34 +757,9 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                   ]}
                   value={brandId}
                   onChange={(e) => setBrandId(e.target.value)}
-                  placeholder="اختر الماركة (اختياري)..."
+                  placeholder="اختر الماركة..."
                 />
               </div>
-            </div>
-
-            {/* Pricing */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Input
-                label="السعر الأساسي للبيع (ج.م) *"
-                type="number"
-                step="0.01"
-                value={basePrice}
-                onChange={(e) => setBasePrice(e.target.value)}
-                required
-              />
-              <Input
-                label="سعر التكلفة الحقيقي (ج.م)"
-                type="number"
-                step="0.01"
-                value={costPrice}
-                onChange={(e) => setCostPrice(e.target.value)}
-              />
-              <Input
-                label="حد تنبيه نقص المخزون"
-                type="number"
-                value={minStockAlert}
-                onChange={(e) => setMinStockAlert(e.target.value)}
-              />
             </div>
           </div>
 

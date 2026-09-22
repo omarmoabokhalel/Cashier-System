@@ -21,7 +21,11 @@ import {
   TrendingUp,
   RotateCcw,
   FileText,
+  Eye,
+  Printer,
+  Receipt,
 } from 'lucide-react';
+import { ReceiptPrintModal } from '../../components/pos/ReceiptPrintModal';
 
 import { useAuthStore } from '../../store/useAuthStore';
 
@@ -64,9 +68,85 @@ export const RegisterShell: React.FC = () => {
   const [closeNotes, setCloseNotes] = useState('');
   const [isClosingShift, setIsClosingShift] = useState(false);
 
+  // Detailed Shift Modal State
+  const [selectedShiftDetails, setSelectedShiftDetails] = useState<any | null>(null);
+  const [shiftInvoices, setShiftInvoices] = useState<any[]>([]);
+  const [loadingShiftInvoices, setLoadingShiftInvoices] = useState(false);
+  const [isShiftDetailsModalOpen, setIsShiftDetailsModalOpen] = useState(false);
+
+  // Receipt Modal State
+  const [selectedReceiptSale, setSelectedReceiptSale] = useState<any | null>(null);
+  const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+
   useEffect(() => {
     fetchShiftData();
   }, []);
+
+  const handleViewShiftDetails = async (shift: any) => {
+    setSelectedShiftDetails(shift);
+    setIsShiftDetailsModalOpen(true);
+    setLoadingShiftInvoices(true);
+    try {
+      const { data, error } = await supabase
+        .from('sales')
+        .select(`
+          *,
+          customers(id, full_name, phone),
+          sale_items(
+            id, quantity, unit_price, cost_price, discount_amount, total_price, variant_id,
+            product_variants(
+              id, sku, barcode, selling_price, cost_price,
+              products(id, name_ar, name_en),
+              sizes(code),
+              colors(name_ar)
+            )
+          ),
+          payments(payment_method, amount)
+        `)
+        .eq('cashier_shift_id', shift.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching shift invoices:', error);
+        showToast('error', 'فشل تحميل فواتير الوردية', error.message);
+      } else {
+        setShiftInvoices(data || []);
+      }
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      setLoadingShiftInvoices(false);
+    }
+  };
+
+  const handlePrintShiftInvoice = (s: any) => {
+    const formattedReceipt = {
+      invoiceNumber: s.invoice_number,
+      createdAt: s.created_at,
+      cashierName: 'كاشير الوردية',
+      customerName: s.customers?.full_name || 'عميل نقدي عام',
+      items: (s.sale_items || []).map((item: any) => ({
+        productNameAr: item.product_variants?.products?.name_ar || 'منتج',
+        sizeCode: item.product_variants?.sizes?.code || 'Std',
+        colorNameAr: item.product_variants?.colors?.name_ar || 'عام',
+        quantity: item.quantity,
+        unitPrice: Number(item.unit_price),
+        discountAmount: Number(item.discount_amount || 0),
+        totalPrice: Number(item.total_price),
+      })),
+      subtotal: Number(s.subtotal),
+      discountAmount: Number(s.discount_amount || 0),
+      taxRate: Number(s.tax_rate ?? 15),
+      taxAmount: Number(s.tax_amount || 0),
+      totalAmount: Number(s.total_amount),
+      paidAmount: Number(s.paid_amount || s.total_amount),
+      changeAmount: Number(s.change_amount || 0),
+      paymentMethod: s.payments?.[0]?.payment_method || 'cash',
+    };
+
+    setSelectedReceiptSale(formattedReceipt);
+    setIsReceiptModalOpen(true);
+  };
 
   const fetchShiftData = async () => {
     setLoading(true);
@@ -296,10 +376,21 @@ export const RegisterShell: React.FC = () => {
                 <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
                 <h3 className="text-sm font-bold text-white">الوردية الحالية مفتوحة</h3>
                 <span className="text-xs text-slate-400 flex items-center gap-1">
-                  <Clock className="w-3.5 h-3.5" /> منذ {new Date(activeShift.opened_at).toLocaleTimeString('ar-SA')}
+                  <Clock className="w-3.5 h-3.5" /> منذ {new Date(activeShift.opened_at).toLocaleTimeString('ar-EG')}
                 </span>
               </div>
-              <Badge variant="primary" size="sm">مفتوحة</Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => handleViewShiftDetails(activeShift)}
+                  size="sm"
+                  variant="secondary"
+                  className="bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800 text-xs gap-1.5"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>استعراض فواتير الوردية الحالية</span>
+                </Button>
+                <Badge variant="primary" size="sm">مفتوحة</Badge>
+              </div>
             </div>
 
             {/* BREAKDOWN METRICS GRID */}
@@ -383,25 +474,162 @@ export const RegisterShell: React.FC = () => {
               <div key={s.id} className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-xs">
                 <div>
                   <span className="font-bold text-slate-100 block">
-                    تاريخ الإغلاق: {new Date(s.closed_at).toLocaleDateString('ar-SA')} - {new Date(s.closed_at).toLocaleTimeString('ar-SA')}
+                    تاريخ الإغلاق: {new Date(s.closed_at).toLocaleDateString('ar-EG')} - {new Date(s.closed_at).toLocaleTimeString('ar-EG')}
                   </span>
                   <span className="text-[10px] text-slate-400">
                     المتوقع: {Number(s.expected_closing_balance).toFixed(2)} | الفعلي: {Number(s.closing_balance_counted).toFixed(2)}
                   </span>
                 </div>
 
-                <div className="text-left">
-                  <span className={`font-mono font-bold text-xs ${
-                    Number(s.variance) === 0 ? 'text-emerald-400' : Number(s.variance) < 0 ? 'text-rose-400' : 'text-sky-400'
-                  }`}>
-                    {Number(s.variance) === 0 ? 'طبيعي (0.00)' : `الفارق: ${Number(s.variance).toFixed(2)} ج.م`}
-                  </span>
+                <div className="flex items-center gap-3">
+                  <div className="text-left">
+                    <span className={`font-mono font-bold text-xs ${
+                      Number(s.variance) === 0 ? 'text-emerald-400' : Number(s.variance) < 0 ? 'text-rose-400' : 'text-sky-400'
+                    }`}>
+                      {Number(s.variance) === 0 ? 'طبيعي (0.00)' : `الفارق: ${Number(s.variance).toFixed(2)} ج.م`}
+                    </span>
+                  </div>
+
+                  <Button
+                    onClick={() => handleViewShiftDetails(s)}
+                    size="sm"
+                    variant="secondary"
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] gap-1 px-2.5 py-1"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>فواتير الوردية والتفاصيل</span>
+                  </Button>
                 </div>
               </div>
             ))
           )}
         </div>
       </Card>
+
+      {/* SHIFT DETAILS & INVOICES MODAL */}
+      <Dialog
+        isOpen={isShiftDetailsModalOpen}
+        onClose={() => setIsShiftDetailsModalOpen(false)}
+        title={`تفاصيل وفواتير الوردية (${selectedShiftDetails?.status === 'open' ? 'الوردية الحالية' : 'وردية مغلقة'})`}
+        maxWidth="lg"
+      >
+        <div className="space-y-4 font-sans select-none text-slate-100" dir="rtl">
+          {selectedShiftDetails && (
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div>
+                <span className="text-[10px] text-slate-400 block">تاريخ ووقت الفتح</span>
+                <span className="font-bold text-slate-200">
+                  {new Date(selectedShiftDetails.opened_at).toLocaleDateString('ar-EG')} {new Date(selectedShiftDetails.opened_at).toLocaleTimeString('ar-EG')}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-400 block">تاريخ ووقت الإغلاق</span>
+                <span className="font-bold text-slate-200">
+                  {selectedShiftDetails.closed_at
+                    ? `${new Date(selectedShiftDetails.closed_at).toLocaleDateString('ar-EG')} ${new Date(selectedShiftDetails.closed_at).toLocaleTimeString('ar-EG')}`
+                    : 'مفتوحة حالياً'}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-400 block">مبيعات الكاش والشبكة</span>
+                <span className="font-bold text-emerald-400">
+                  كاش: {Number(selectedShiftDetails.total_sales_cash || 0).toFixed(2)} | شبكة: {Number(selectedShiftDetails.total_sales_card || 0).toFixed(2)}
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-400 block">الرصيد الفعلي / الفارق</span>
+                <span className="font-bold text-amber-400 font-mono">
+                  {selectedShiftDetails.closing_balance_counted !== undefined
+                    ? `${Number(selectedShiftDetails.closing_balance_counted).toFixed(2)} (فارق: ${Number(selectedShiftDetails.variance || 0).toFixed(2)})`
+                    : 'في الانتظار'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Shift Sales Invoices List */}
+          <div className="space-y-2">
+            <h4 className="text-xs font-bold text-slate-300 flex items-center justify-between">
+              <span>فواتير المبيعات الصادرة في هذه الوردية ({shiftInvoices.length} فاتورة)</span>
+            </h4>
+
+            {loadingShiftInvoices ? (
+              <div className="p-6 text-center text-xs text-slate-500">جاري تحميل فواتير الوردية...</div>
+            ) : shiftInvoices.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500 bg-slate-950 rounded-xl border border-slate-800">
+                لم يتم إصدار أي فواتير في هذه الوردية
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-y-auto custom-scrollbar border border-slate-800 rounded-xl">
+                <table className="w-full text-right text-xs">
+                  <thead className="bg-slate-950 border-b border-slate-800 text-slate-400 font-bold sticky top-0">
+                    <tr>
+                      <th className="p-2.5">رقم الفاتورة</th>
+                      <th className="p-2.5">الوقت</th>
+                      <th className="p-2.5">العميل</th>
+                      <th className="p-2.5">طريقة الدفع</th>
+                      <th className="p-2.5">المبلغ الإجمالي</th>
+                      <th className="p-2.5 text-center">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 bg-slate-900">
+                    {shiftInvoices.map((inv) => (
+                      <tr key={inv.id} className="hover:bg-slate-800/40">
+                        <td className="p-2.5 font-mono font-bold text-indigo-400">
+                          {inv.invoice_number}
+                        </td>
+                        <td className="p-2.5 font-mono text-slate-400 text-[11px]">
+                          {new Date(inv.created_at).toLocaleTimeString('ar-EG')}
+                        </td>
+                        <td className="p-2.5 font-semibold text-slate-200">
+                          {inv.customers?.full_name || 'عميل نقدي عام'}
+                        </td>
+                        <td className="p-2.5">
+                          <Badge variant="secondary" size="sm">
+                            {inv.payments?.[0]?.payment_method === 'card'
+                              ? 'بطاقة'
+                              : 'نقداً'}
+                          </Badge>
+                        </td>
+                        <td className="p-2.5 font-mono font-bold text-emerald-400">
+                          {Number(inv.total_amount).toFixed(2)} ج.م
+                        </td>
+                        <td className="p-2.5 text-center">
+                          <Button
+                            onClick={() => handlePrintShiftInvoice(inv)}
+                            size="sm"
+                            variant="secondary"
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] gap-1 px-2 py-0.5"
+                          >
+                            <Printer className="w-3 h-3 text-emerald-400" />
+                            <span>طباعة الفاتورة</span>
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end pt-2 border-t border-slate-800">
+            <Button variant="secondary" onClick={() => setIsShiftDetailsModalOpen(false)}>
+              إغلاق
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* RECEIPT MODAL */}
+      <ReceiptPrintModal
+        isOpen={isReceiptModalOpen}
+        onClose={() => setIsReceiptModalOpen(false)}
+        saleData={selectedReceiptSale}
+      />
 
       {/* OPEN NEW SHIFT MODAL */}
       <Dialog

@@ -24,6 +24,8 @@ import { UsersShell } from './pages/users/UsersShell';
 import { NotificationsShell } from './pages/notifications/NotificationsShell';
 import { SettingsShell } from './pages/settings/SettingsShell';
 
+import { checkAndAutoCloseCairoMidnightShift } from './utils/shiftAutoScheduler';
+
 export const App: React.FC = () => {
   const { user, initialize } = useAuthStore();
   const [activeNav, setActiveNav] = useState<string>('dashboard');
@@ -32,6 +34,16 @@ export const App: React.FC = () => {
   useEffect(() => {
     initialize();
   }, [initialize]);
+
+  useEffect(() => {
+    if (user) {
+      checkAndAutoCloseCairoMidnightShift();
+      const interval = setInterval(() => {
+        checkAndAutoCloseCairoMidnightShift();
+      }, 60000);
+      return () => clearInterval(interval);
+    }
+  }, [user]);
 
   if (!user) {
     return <LoginPage />;

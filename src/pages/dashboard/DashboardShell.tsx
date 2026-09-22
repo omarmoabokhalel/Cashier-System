@@ -53,6 +53,7 @@ interface OwnerMetrics {
 export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [isOwnerView, setIsOwnerView] = useState(false);
+  const [activeShift, setActiveShift] = useState<any | null>(null);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [ownerMetrics, setOwnerMetrics] = useState<OwnerMetrics | null>(null);
 
@@ -63,12 +64,108 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
   const loadDashboardData = async () => {
     setLoading(true);
     try {
+      // 1. Fetch current active open shift
+      const { data: openShiftData } = await (supabase.from('cashier_shifts') as any)
+        .select('*')
+        .eq('status', 'open')
+        .order('opened_at', { ascending: false })
+        .limit(1);
+
+      const currentShift = openShiftData && openShiftData.length > 0 ? openShiftData[0] : null;
+      setActiveShift(currentShift);
+
+      // 2. Query shift analytics RPC
       const [{ data: dbMetrics }, { data: dbOwner }] = await Promise.all([
-        (supabase.rpc as any)('rpc_get_dashboard_analytics'),
+        (supabase.rpc as any)('rpc_get_dashboard_analytics', {
+          p_shift_id: currentShift?.id || null,
+        }),
         (supabase.rpc as any)('rpc_get_executive_owner_metrics'),
       ]);
 
-      if (dbMetrics) setMetrics(dbMetrics);
+      if (dbMetrics) {
+        setMetrics(dbMetrics);
+      } else if (currentShift) {
+        // Fallback: Query sales for active shift directly
+        const { data: shiftSales } = await supabase
+          .from('sales')
+          .select(`
+            id, total_amount, subtotal, discount_amount, created_at,
+            sale_items(
+              quantity, returned_quantity, unit_price, cost_price, total_price,
+              product_variants(products(name_ar, categories(name_ar)))
+            ),
+            payments(payment_method, amount)
+          `)
+          .eq('cashier_shift_id', currentShift.id);
+
+        const salesList = shiftSales || [];
+        const totalSalesAmt = salesList.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
+        const invoicesCount = salesList.length;
+        const avgInv = invoicesCount > 0 ? totalSalesAmt / invoicesCount : 0;
+
+        let totalCogs = 0;
+        const topProdMap: Record<string, { total_sold: number; total_revenue: number }> = {};
+        const paymentMap: Record<string, number> = {};
+        const catMap: Record<string, number> = {};
+
+        salesList.forEach((s) => {
+          (s.sale_items || []).forEach((item: any) => {
+            const netQty = (item.quantity || 0) - (item.returned_quantity || 0);
+            totalCogs += Number(item.cost_price || 0) * netQty;
+            const pName = item.product_variants?.products?.name_ar || 'منتج';
+            if (!topProdMap[pName]) topProdMap[pName] = { total_sold: 0, total_revenue: 0 };
+            topProdMap[pName].total_sold += netQty;
+            topProdMap[pName].total_revenue += Number(item.total_price || 0);
+
+            const cName = item.product_variants?.products?.categories?.name_ar || 'عام';
+            catMap[cName] = (catMap[cName] || 0) + Number(item.total_price || 0);
+          });
+
+          (s.payments || []).forEach((p: any) => {
+            const pm = p.payment_method || 'cash';
+            paymentMap[pm] = (paymentMap[pm] || 0) + Number(p.amount || 0);
+          });
+        });
+
+        const grossProf = totalSalesAmt - totalCogs;
+        const retTot = Number(currentShift.total_returns_cash || 0);
+        const expTot = Number(currentShift.total_expenses || 0);
+        const netSal = totalSalesAmt - retTot;
+        const netProf = grossProf - expTot;
+
+        const topProducts = Object.entries(topProdMap)
+          .map(([product_name, val]) => ({ product_name, ...val }))
+          .sort((a, b) => b.total_sold - a.total_sold)
+          .slice(0, 5);
+
+        const salesByPayment = Object.entries(paymentMap).map(([payment_method, total_amount]) => ({
+          payment_method,
+          total_amount,
+        }));
+
+        const salesByCategory = Object.entries(catMap).map(([category_name, total_revenue]) => ({
+          category_name,
+          total_revenue,
+        }));
+
+        setMetrics({
+          sales_today: totalSalesAmt,
+          sales_month: totalSalesAmt,
+          invoices_count: invoicesCount,
+          avg_invoice: avgInv,
+          cogs: totalCogs,
+          gross_profit: grossProf,
+          returns_total: retTot,
+          expenses_total: expTot,
+          net_sales: netSal,
+          net_profit: netProf,
+          top_products: topProducts,
+          sales_by_category: salesByCategory,
+          sales_by_payment: salesByPayment,
+          daily_trend: [],
+        });
+      }
+
       if (dbOwner) setOwnerMetrics(dbOwner);
     } catch (e) {
       console.error('Error loading dashboard metrics:', e);
@@ -83,13 +180,19 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
       <div className="bg-gradient-to-r from-indigo-950 via-purple-950 to-slate-950 border border-indigo-800/60 rounded-3xl p-6 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h2 className="text-xl font-bold text-white">نظام كاشير   </h2>
-            <Badge variant="primary" size="sm" className="bg-indigo-900/80 border border-indigo-700 text-indigo-200">
-              بيانات حقيقية 100%
-            </Badge>
+            <h2 className="text-xl font-bold text-white">لوحة مؤشرات الوردية الحالية</h2>
+            {activeShift ? (
+              <Badge variant="success" size="sm" className="bg-emerald-950 border border-emerald-700 text-emerald-300">
+                الوردية مفتوحة (منذ {new Date(activeShift.opened_at).toLocaleTimeString('ar-EG')})
+              </Badge>
+            ) : (
+              <Badge variant="warning" size="sm" className="bg-amber-950 border border-amber-700 text-amber-300">
+                لا توجد وردية مفتوحة
+              </Badge>
+            )}
           </div>
           <p className="text-xs text-indigo-200/80 max-w-lg">
-            لوحة تحكم حية متصلة بقواعد بيانات Supabase تحسب الأرباح بناءً على متوسط التكلفة التاريخي.
+            عرض مؤشرات المبيعات، الفواتير والأرباح المحسوبة حصرياً للوردية الحالية النشطة.
           </p>
         </div>
 
@@ -117,12 +220,12 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         </div>
       </div>
 
-      {/* 9 MAIN DATABASE METRIC CARDS */}
+      {/* 9 MAIN SHIFT METRIC CARDS */}
       {metrics ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>مبيعات اليوم</span>
+              <span>مبيعات الوردية الحالية</span>
               <TrendingUp className="w-4 h-4 text-emerald-400" />
             </span>
             <span className="text-lg font-black text-emerald-400 font-mono">
@@ -132,7 +235,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>مبيعات الشهر</span>
+              <span>مبيعات الشهر الكلية</span>
               <Calendar className="w-4 h-4 text-indigo-400" />
             </span>
             <span className="text-lg font-black text-indigo-400 font-mono">
@@ -142,7 +245,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>عدد الفواتير</span>
+              <span>فواتير الوردية</span>
               <ShoppingCart className="w-4 h-4 text-sky-400" />
             </span>
             <span className="text-lg font-black text-white font-mono">
@@ -152,7 +255,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>متوسط الفاتورة</span>
+              <span>متوسط فاتورة الوردية</span>
               <DollarSign className="w-4 h-4 text-purple-400" />
             </span>
             <span className="text-lg font-black text-purple-400 font-mono">
@@ -172,7 +275,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>إجمالي الأرباح</span>
+              <span>أرباح الوردية</span>
               <Sparkles className="w-4 h-4 text-emerald-400" />
             </span>
             <span className="text-lg font-black text-emerald-400 font-mono">
@@ -182,7 +285,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>المرتجعات</span>
+              <span>مرتجعات الوردية</span>
               <RotateCcw className="w-4 h-4 text-rose-400" />
             </span>
             <span className="text-lg font-black text-rose-400 font-mono">
@@ -192,7 +295,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>المصروفات التشغيلية</span>
+              <span>مصروفات الوردية</span>
               <CircleDollarSign className="w-4 h-4 text-rose-400" />
             </span>
             <span className="text-lg font-black text-rose-400 font-mono">
@@ -202,7 +305,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>صافي المبيعات</span>
+              <span>صافي مبيعات الوردية</span>
               <TrendingUp className="w-4 h-4 text-indigo-400" />
             </span>
             <span className="text-lg font-black text-indigo-400 font-mono">
@@ -212,7 +315,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-gradient-to-br from-emerald-950 to-slate-900 border-emerald-800/80 space-y-1 shadow-lg shadow-emerald-600/10">
             <span className="text-[11px] text-emerald-300 font-bold block flex items-center justify-between">
-              <span>صافي الربح النهائي</span>
+              <span>صافي ربح الوردية النهائي</span>
               <Crown className="w-4 h-4 text-amber-400" />
             </span>
             <span className="text-lg font-black text-emerald-300 font-mono">

@@ -142,16 +142,20 @@ export const ExchangesShell: React.FC = () => {
         const { data } = await supabase
           .from('product_variants')
           .select(`
-            id, sku, barcode, selling_price, cost_price,
+            id, sku, barcode, selling_price, cost_price, deleted_at,
             sizes(id, code, name_ar),
             colors(id, name_ar, hex_code),
-            products(id, name_ar, name_en, category_id, image_url),
+            products(id, name_ar, name_en, category_id, image_url, deleted_at),
             branch_variant_stock(quantity)
           `)
           .eq('is_active', true)
+          .is('deleted_at', null)
           .limit(30);
 
-        setCatalogProducts(data || []);
+        const activeCatalog = (data || []).filter(
+          (pv: any) => !pv.deleted_at && pv.products && !pv.products.deleted_at
+        );
+        setCatalogProducts(activeCatalog);
       } catch (e) {
         console.error('Failed to load catalog:', e);
       } finally {

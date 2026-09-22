@@ -5,6 +5,7 @@ import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Dialog } from '../../components/ui/Dialog';
+import { ProductFormModal } from '../../components/products/ProductFormModal';
 import { useToast } from '../../components/ui/Toast';
 import {
   ShoppingBag,
@@ -41,6 +42,7 @@ export const PurchasesShell: React.FC = () => {
 
   // New PO Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isProductFormOpen, setIsProductFormOpen] = useState(false);
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
   const [poItems, setPoItems] = useState<Array<{ variantId: string; qty: number; unitCost: number }>>([]);
   const [isCreating, setIsCreating] = useState(false);
@@ -57,7 +59,7 @@ export const PurchasesShell: React.FC = () => {
   const fetchInitialData = async () => {
     setLoading(true);
     try {
-      const [{ data: poData }, { data: suppData }, { data: varData }] = await Promise.all([
+      const [poRes, suppRes, varRes] = await Promise.all([
         supabase
           .from('purchases')
           .select(`
@@ -74,14 +76,23 @@ export const PurchasesShell: React.FC = () => {
           .from('product_variants')
           .select('id, sku, cost_price, selling_price, sizes(code), colors(name_ar), products(name_ar)')
           .eq('is_active', true)
-          .limit(30),
+          .order('created_at', { ascending: false }),
       ]);
 
-      setPurchases(poData || []);
-      setSuppliers(suppData || []);
-      setVariants(varData || []);
+      if (poRes.error) console.warn('Purchases query note:', poRes.error.message);
+      if (suppRes.error) console.warn('Suppliers query note:', suppRes.error.message);
+      if (varRes.error) console.warn('Variants query note:', varRes.error.message);
+
+      const activeVariants = (varRes.data || []).filter(
+        (pv: any) => pv && pv.products && (!pv.deleted_at) && (!pv.products.deleted_at)
+      );
+
+      setPurchases(poRes.data || []);
+      setSuppliers(suppRes.data || []);
+      setVariants(activeVariants);
     } catch (e: any) {
-      console.error(e);
+      console.error('fetchInitialData error:', e);
+      showToast('error', 'فشل تحميل بيانات المشتريات', e.message);
     } finally {
       setLoading(false);
     }
@@ -288,7 +299,17 @@ export const PurchasesShell: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">إضافة أصناف للشراء</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-semibold text-slate-300">إضافة أصناف للشراء</label>
+              <button
+                type="button"
+                onClick={() => setIsProductFormOpen(true)}
+                className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1 bg-indigo-950/60 px-2.5 py-1 rounded-lg border border-indigo-800/40 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ إضافة منتج جديد غير موجود</span>
+              </button>
+            </div>
             <select
               onChange={(e) => {
                 if (e.target.value) {
@@ -301,7 +322,7 @@ export const PurchasesShell: React.FC = () => {
               <option value="">-- اختر منتج لإضافته --</option>
               {variants.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {v.products?.name_ar} ({v.sizes?.code} • {v.colors?.name_ar})
+                  {v.products?.name_ar} {v.sizes?.code ? `(${v.sizes.code} • ${v.colors?.name_ar || 'عام'})` : ''}
                 </option>
               ))}
             </select>
@@ -397,6 +418,39 @@ export const PurchasesShell: React.FC = () => {
           </Button>
         </div>
       </Dialog>
+
+      {/* QUICK PRODUCT FORM MODAL */}
+      <ProductFormModal
+        isOpen={isProductFormOpen}
+        onClose={() => setIsProductFormOpen(false)}
+        isFromPurchaseOrder={true}
+        onSaved={async () => {
+          setIsProductFormOpen(false);
+          try {
+            const { data: varData } = await (supabase.from('product_variants') as any)
+              .select('id, sku, cost_price, selling_price, sizes(code), colors(name_ar), products(name_ar)')
+              .eq('is_active', true)
+              .order('created_at', { ascending: false });
+
+            const activeVariants = (varData || []).filter(
+              (pv: any) => pv && pv.products && (!pv.deleted_at) && (!pv.products.deleted_at)
+            );
+            setVariants(activeVariants);
+
+            if (activeVariants.length > 0) {
+              const newestVariant = activeVariants[0];
+              addPoItem(newestVariant.id);
+              showToast(
+                'success',
+                'تم إنشاء المنتج وإضافته لأمر الشراء!',
+                `تمت إضافة "${newestVariant.products?.name_ar}" لأمر الشراء (المخزون الحالي: 0 قطعة حتى تأكيد الاستلام)`
+              );
+            }
+          } catch (e: any) {
+            console.error(e);
+          }
+        }}
+      />
     </div>
   );
 };

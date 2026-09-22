@@ -7,6 +7,7 @@ import { Badge } from '../../components/ui/Badge';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Dialog } from '../../components/ui/Dialog';
 import { ReceiptPrintModal } from '../../components/pos/ReceiptPrintModal';
+import { EditInvoiceModal } from '../../components/sales/EditInvoiceModal';
 import { useToast } from '../../components/ui/Toast';
 import {
   Receipt,
@@ -20,7 +21,10 @@ import {
   ArrowDownLeft,
   DollarSign,
   FileText,
+  Pencil,
 } from 'lucide-react';
+
+import { useAuthStore } from '../../store/useAuthStore';
 
 interface SaleRecord {
   id: string;
@@ -35,6 +39,8 @@ interface SaleRecord {
   change_amount: number;
   payment_status: string;
   notes: string | null;
+  cashier_id?: string | null;
+  cashier?: { id: string; full_name: string };
   customers?: { id: string; full_name: string; phone: string | null };
   sale_items?: any[];
   payments?: any[];
@@ -42,27 +48,61 @@ interface SaleRecord {
 
 export const SalesShell: React.FC = () => {
   const { showToast } = useToast();
+  const { user } = useAuthStore();
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+
+  // Shift & Date Isolation State
+  const [activeShift, setActiveShift] = useState<{ id: string; opened_at: string } | null>(null);
+  const [shiftFilter, setShiftFilter] = useState<'current' | 'all' | 'custom'>('current');
+  const [customDate, setCustomDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [sellerFilter, setSellerFilter] = useState<string>('all');
 
   // Receipt Modal State
   const [selectedSale, setSelectedSale] = useState<any | null>(null);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
 
+  // Edit Invoice Modal State
+  const [selectedSaleForEdit, setSelectedSaleForEdit] = useState<SaleRecord | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+
+  const getSellerName = (s: SaleRecord) => {
+    const adminName = localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير';
+    if (s.cashier?.full_name) return s.cashier.full_name;
+    if (!s.cashier_id || s.cashier_id === '00000000-0000-0000-0000-000000000001') return adminName;
+    if (s.cashier_id === '00000000-0000-0000-0000-000000000002') return 'أحمد الكاشير';
+    return adminName;
+  };
+
   const fetchSalesData = async () => {
     setLoading(true);
     try {
+      // 1. Fetch current open shift
+      const { data: openShiftData } = await (supabase.from('cashier_shifts') as any)
+        .select('id, opened_at')
+        .eq('status', 'open')
+        .order('opened_at', { ascending: false })
+        .limit(1);
+
+      if (openShiftData && openShiftData.length > 0) {
+        setActiveShift(openShiftData[0]);
+      } else {
+        setActiveShift(null);
+      }
+
+      // 2. Fetch sales records
       const { data, error } = await supabase
         .from('sales')
         .select(`
           *,
+          cashier:profiles!sales_cashier_id_fkey(id, full_name),
           customers(id, full_name, phone),
           sale_items(
-            id, quantity, unit_price, discount_amount, total_price,
+            id, quantity, unit_price, cost_price, discount_amount, total_price, variant_id,
             product_variants(
-              sku, barcode,
-              products(name_ar, name_en),
+              id, sku, barcode, selling_price, cost_price,
+              products(id, name_ar, name_en, cost_price, min_selling_price, base_price),
               sizes(code),
               colors(name_ar)
             )
@@ -72,8 +112,26 @@ export const SalesShell: React.FC = () => {
         .order('created_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching sales:', error);
-        showToast('error', 'فشل تحميل سجل الفواتير', error.message);
+        // Fallback fetch without explicit relation
+        const { data: fallbackData } = await supabase
+          .from('sales')
+          .select(`
+            *,
+            customers(id, full_name, phone),
+            sale_items(
+              id, quantity, unit_price, cost_price, discount_amount, total_price, variant_id,
+              product_variants(
+                id, sku, barcode, selling_price, cost_price,
+                products(id, name_ar, name_en, cost_price, min_selling_price, base_price),
+                sizes(code),
+                colors(name_ar)
+              )
+            ),
+            payments(payment_method, amount)
+          `)
+          .order('created_at', { ascending: false });
+
+        setSales(fallbackData || []);
       } else {
         setSales(data || []);
       }
@@ -93,7 +151,7 @@ export const SalesShell: React.FC = () => {
     const formattedReceipt = {
       invoiceNumber: s.invoice_number,
       createdAt: s.created_at,
-      cashierName: 'كاشير المبيعات',
+      cashierName: getSellerName(s),
       customerName: s.customers?.full_name || 'عميل نقدي عام',
       items: (s.sale_items || []).map((item: any) => ({
         productNameAr: item.product_variants?.products?.name_ar || 'منتج',
@@ -118,14 +176,48 @@ export const SalesShell: React.FC = () => {
     setIsReceiptModalOpen(true);
   };
 
+  const handleOpenEditModal = (s: SaleRecord) => {
+    setSelectedSaleForEdit(s);
+    setIsEditModalOpen(true);
+  };
+
+  // Filter Sales Logic
   const filteredSales = sales.filter((s) => {
+    // 1. Shift / Date Filter
+    if (shiftFilter === 'current') {
+      if (activeShift?.id) {
+        if (s.cashier_shift_id !== activeShift.id) return false;
+      } else {
+        // Fallback to today's date if no active open shift
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (!s.created_at?.startsWith(todayStr)) return false;
+      }
+    } else if (shiftFilter === 'custom') {
+      if (!s.created_at?.startsWith(customDate)) return false;
+    }
+
+    // 2. Seller / Cashier Filter
+    const sellerName = getSellerName(s);
+    if (sellerFilter !== 'all') {
+      if (sellerFilter === 'admin') {
+        const adminName = localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير';
+        if (sellerName !== adminName && !sellerName.includes('المالك') && !sellerName.includes('مدير')) return false;
+      } else if (sellerFilter === 'cashier') {
+        if (!sellerName.includes('أحمد') && !sellerName.includes('كاشير')) return false;
+      }
+    }
+
+    // 3. Search Text Query
     const q = search.toLowerCase().trim();
+    if (!q) return true;
+
     const invMatch = s.invoice_number?.toLowerCase().includes(q);
     const custMatch = s.customers?.full_name?.toLowerCase().includes(q) || s.customers?.phone?.includes(q);
-    return invMatch || custMatch;
+    const sellerMatch = sellerName.toLowerCase().includes(q);
+    return invMatch || custMatch || sellerMatch;
   });
 
-  const totalRevenue = sales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
+  const totalRevenue = filteredSales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
 
   return (
     <div className="p-6 space-y-6 font-sans select-none text-slate-100" dir="rtl">
@@ -137,28 +229,102 @@ export const SalesShell: React.FC = () => {
             <span>سجل الفواتير والمبيعات الصادرة</span>
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            استعراض جميع الفواتير الصادرة، إعادة طباعة الإيصالات ومتابعة إيرادات المبيعات
+            استعراض وتعديل فواتير الوردية الحالية، أراشيف الورديات السابقة وإعادة طباعة الإيصالات
           </p>
         </div>
 
         <div className="bg-emerald-950/80 border border-emerald-800 px-4 py-2 rounded-2xl flex items-center gap-3 shadow-lg shadow-emerald-950/20">
           <DollarSign className="w-6 h-6 text-emerald-400" />
           <div>
-            <span className="text-[10px] text-emerald-300 block font-bold">إجمالي إيرادات الفواتير</span>
+            <span className="text-[10px] text-emerald-300 block font-bold">
+              إيرادات الفواتير المعروضة ({filteredSales.length} فاتورة)
+            </span>
             <span className="text-lg font-black text-emerald-400 font-mono">{totalRevenue.toFixed(2)} ج.م</span>
           </div>
         </div>
       </div>
 
       {/* Filter & Search Bar */}
-      <Card className="p-4 bg-slate-900 border-slate-800">
-        <div className="relative max-w-md">
-          <Input
-            placeholder="ابحث برقم الفاتورة (INV-...)، اسم العميل، أو الهاتف..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            icon={<Search className="w-4 h-4 text-slate-400" />}
-          />
+      <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+          {/* Shift & Date Isolation Controls */}
+          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+            <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+              <Calendar className="w-4 h-4 text-indigo-400" />
+              <span>عرض الفواتير حسب:</span>
+            </label>
+            <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+              <button
+                onClick={() => setShiftFilter('current')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  shiftFilter === 'current'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>الوردية الحالية المفتوحة</span>
+              </button>
+
+              <button
+                onClick={() => setShiftFilter('all')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  shiftFilter === 'all'
+                    ? 'bg-indigo-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>جميع الورديات والأيام</span>
+              </button>
+
+              <button
+                onClick={() => setShiftFilter('custom')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                  shiftFilter === 'custom'
+                    ? 'bg-amber-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>تاريخ محدد</span>
+              </button>
+            </div>
+
+            {shiftFilter === 'custom' && (
+              <Input
+                type="date"
+                value={customDate}
+                onChange={(e) => setCustomDate(e.target.value)}
+                className="w-40 h-8 text-xs bg-slate-950 font-mono"
+              />
+            )}
+          </div>
+
+          {/* Seller Filter & Search Box */}
+          <div className="flex items-center gap-3 w-full md:w-auto">
+            <div className="flex items-center gap-1.5">
+              <User className="w-4 h-4 text-emerald-400" />
+              <select
+                value={sellerFilter}
+                onChange={(e) => setSellerFilter(e.target.value)}
+                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
+              >
+                <option value="all">جميع البائعين</option>
+                <option value="admin">{localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير'}</option>
+                <option value="cashier">أحمد الكاشير</option>
+              </select>
+            </div>
+
+            <div className="w-full md:w-64">
+              <Input
+                placeholder="ابحث بالرقم، العميل، أو البائع..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                icon={<Search className="w-4 h-4 text-slate-400" />}
+              />
+            </div>
+          </div>
         </div>
       </Card>
 
@@ -179,6 +345,7 @@ export const SalesShell: React.FC = () => {
                 <tr>
                   <th className="p-3">رقم الفاتورة</th>
                   <th className="p-3">تاريخ ووقت الإصدار</th>
+                  <th className="p-3">اسم البائع</th>
                   <th className="p-3">العميل</th>
                   <th className="p-3">طريقة الدفع</th>
                   <th className="p-3">الخصم</th>
@@ -201,6 +368,13 @@ export const SalesShell: React.FC = () => {
                         <span className="text-[10px] text-slate-500 font-mono">
                           {new Date(s.created_at).toLocaleTimeString('ar-EG')}
                         </span>
+                      </div>
+                    </td>
+
+                    <td className="p-3 font-bold text-emerald-400">
+                      <div className="flex items-center gap-1.5">
+                        <User className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>{getSellerName(s)}</span>
                       </div>
                     </td>
 
@@ -237,15 +411,27 @@ export const SalesShell: React.FC = () => {
                     </td>
 
                     <td className="p-3 text-center">
-                      <Button
-                        onClick={() => handleOpenReceipt(s)}
-                        size="sm"
-                        variant="secondary"
-                        className="bg-slate-800 hover:bg-slate-700 text-indigo-300 gap-1 text-[11px] px-2.5 py-1"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>معاينة وطباعة</span>
-                      </Button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <Button
+                          onClick={() => handleOpenEditModal(s)}
+                          size="sm"
+                          variant="secondary"
+                          className="bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 gap-1 text-[11px] px-2.5 py-1"
+                        >
+                          <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>تعديل</span>
+                        </Button>
+
+                        <Button
+                          onClick={() => handleOpenReceipt(s)}
+                          size="sm"
+                          variant="secondary"
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 gap-1 text-[11px] px-2.5 py-1"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>طباعة</span>
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -254,6 +440,14 @@ export const SalesShell: React.FC = () => {
           </div>
         )}
       </Card>
+
+      {/* EDIT INVOICE MODAL */}
+      <EditInvoiceModal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        sale={selectedSaleForEdit}
+        onInvoiceUpdated={fetchSalesData}
+      />
 
       {/* RECEIPT MODAL */}
       <ReceiptPrintModal
@@ -264,3 +458,4 @@ export const SalesShell: React.FC = () => {
     </div>
   );
 };
+

@@ -13,6 +13,7 @@ import { useToast } from '../../components/ui/Toast';
 import { PermissionGuard } from '../../components/auth/PermissionGuard';
 import { ProductFormModal } from '../../components/products/ProductFormModal';
 import { ProductDetailsModal } from '../../components/products/ProductDetailsModal';
+import { BarcodePrintModal } from '../../components/products/BarcodePrintModal';
 import {
   Package,
   Plus,
@@ -25,6 +26,7 @@ import {
   ChevronLeft,
   Tags,
   CheckCircle2,
+  Printer,
 } from 'lucide-react';
 
 export const ProductsShell: React.FC = () => {
@@ -45,6 +47,8 @@ export const ProductsShell: React.FC = () => {
 
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [isBarcodeModalOpen, setIsBarcodeModalOpen] = useState(false);
+  const [selectedProductForBarcode, setSelectedProductForBarcode] = useState<any | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<any | null>(null);
   const [isDuplicateMode, setIsDuplicateMode] = useState(false);
 
@@ -165,13 +169,18 @@ export const ProductsShell: React.FC = () => {
     if (!productToDelete) return;
     setDeleting(true);
     try {
+      const nowStr = new Date().toISOString();
       const { error } = await (supabase.from('products') as any)
-        .update({ deleted_at: new Date().toISOString() })
+        .update({ deleted_at: nowStr })
         .eq('id', productToDelete.id);
 
       if (error) throw error;
 
-      showToast('success', 'تم نقل المنتج إلى المحذوفات بنجاح');
+      await (supabase.from('product_variants') as any)
+        .update({ deleted_at: nowStr })
+        .eq('product_id', productToDelete.id);
+
+      showToast('success', 'تم حذف المنتج وأصنافه من المخزون بنجاح');
       setIsDeleteDialogOpen(false);
       setProductToDelete(null);
       fetchProductsData();
@@ -256,6 +265,18 @@ const generateUUID = (): string => {
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            onClick={() => {
+              setSelectedProductForBarcode(null);
+              setIsBarcodeModalOpen(true);
+            }}
+            variant="secondary"
+            className="bg-emerald-950/80 hover:bg-emerald-900/80 text-emerald-300 border-emerald-800 gap-1.5 text-xs font-bold"
+          >
+            <Printer className="w-4 h-4 text-emerald-400" />
+            <span>طباعة باركود المنتجات</span>
+          </Button>
+
           <Button
             onClick={() => setIsTaxonomyModalOpen(true)}
             variant="secondary"
@@ -428,9 +449,20 @@ const generateUUID = (): string => {
                             <button
                               onClick={() => handleOpenDetails(p)}
                               className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg"
-                              title="معاينة التفاصيل والباركود"
+                              title="معاينة التفاصيل"
                             >
                               <Eye className="w-4 h-4" />
+                            </button>
+
+                            <button
+                              onClick={() => {
+                                setSelectedProductForBarcode(p);
+                                setIsBarcodeModalOpen(true);
+                              }}
+                              className="p-1.5 text-emerald-400 hover:bg-emerald-950/60 rounded-lg"
+                              title="طباعة ملصقات الباركود لهذا المنتج"
+                            >
+                              <Printer className="w-4 h-4" />
                             </button>
 
                             <PermissionGuard permission="edit_product">
@@ -515,6 +547,13 @@ const generateUUID = (): string => {
         isOpen={isDetailsModalOpen}
         onClose={() => setIsDetailsModalOpen(false)}
         product={selectedProduct}
+      />
+
+      <BarcodePrintModal
+        isOpen={isBarcodeModalOpen}
+        onClose={() => setIsBarcodeModalOpen(false)}
+        product={selectedProductForBarcode}
+        allProducts={products}
       />
 
       <ConfirmDialog

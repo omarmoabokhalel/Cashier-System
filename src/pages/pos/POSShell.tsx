@@ -36,6 +36,7 @@ import {
   Layers,
   Unlock,
   Landmark,
+  DollarSign,
 } from 'lucide-react';
 
 const HELD_SALES_KEY = 'pos_held_sales_v1';
@@ -57,6 +58,10 @@ export const POSShell: React.FC = () => {
   const [selectedCartIndex, setSelectedCartIndex] = useState<number | null>(null);
   const [editingItem, setEditingItem] = useState<CartItem | null>(null);
   const [isDiscountModalOpen, setIsDiscountModalOpen] = useState(false);
+
+  // State: Order Level Discount in Payment Modal
+  const [orderDiscountType, setOrderDiscountType] = useState<'flat' | 'percentage'>('flat');
+  const [orderDiscountValue, setOrderDiscountValue] = useState<number>(0);
 
   // State: Customer
   const [selectedCustomer, setSelectedCustomer] = useState<POSCustomer>({
@@ -232,18 +237,22 @@ export const POSShell: React.FC = () => {
           supabase
             .from('product_variants')
             .select(`
-              id, sku, barcode, selling_price, cost_price, discount_price, image_url,
+              id, sku, barcode, selling_price, cost_price, discount_price, min_selling_price, image_url, deleted_at,
               sizes(id, code, name_ar),
               colors(id, name_ar, hex_code),
-              products(id, name_ar, name_en, category_id, image_url),
+              products(id, name_ar, name_en, category_id, image_url, min_selling_price, deleted_at),
               branch_variant_stock(quantity)
             `)
-            .eq('is_active', true),
-          supabase.from('customers').select('id, full_name, phone, loyalty_points, store_credit_balance'),
+            .eq('is_active', true)
+            .is('deleted_at', null),
+          supabase.from('customers').select('*'),
         ]);
 
         setCategories(catData || []);
-        setProducts(prodData || []);
+        const activeVariants = (prodData || []).filter(
+          (pv: any) => !pv.deleted_at && pv.products && !pv.products.deleted_at
+        );
+        setProducts(activeVariants);
 
         if (custData) {
           setCustomers(
@@ -251,8 +260,8 @@ export const POSShell: React.FC = () => {
               id: c.id,
               name: c.full_name,
               phone: c.phone,
-              loyaltyPoints: c.loyalty_points || 0,
-              storeCredit: c.store_credit_balance || 0,
+              loyaltyPoints: c.loyalty_points ?? c.total_points ?? 0,
+              storeCredit: c.store_credit_balance ?? 0,
             }))
           );
         }
@@ -322,7 +331,8 @@ export const POSShell: React.FC = () => {
           showToast('warning', 'نفاد المخزون', 'المنتج غير متوفر في مخزون الفرع الحالي');
           return prevCart;
         }
-        const unitPrice = Number(pv.discount_price || pv.selling_price);
+        const minPrice = Number(pv.min_selling_price || pv.products?.min_selling_price || 0);
+        const unitPrice = Number(pv.selling_price);
         const newItem: CartItem = {
           variantId: pv.id,
           productId: pv.products?.id,
@@ -338,6 +348,7 @@ export const POSShell: React.FC = () => {
           unitPrice,
           originalPrice: Number(pv.selling_price),
           costPrice: Number(pv.cost_price || 0),
+          minSellingPrice: minPrice,
           discountAmount: 0,
           quantity: 1,
           stockQty: stock,
@@ -388,7 +399,17 @@ export const POSShell: React.FC = () => {
     (acc, item) => acc + (item.originalPrice - item.unitPrice + item.discountAmount) * item.quantity,
     0
   );
-  const netSubtotal = Math.max(0, subtotal - totalItemDiscounts);
+
+  const orderDiscountAmount = useMemo(() => {
+    const base = Math.max(0, subtotal - totalItemDiscounts);
+    if (orderDiscountType === 'percentage') {
+      return (base * Math.min(100, Math.max(0, orderDiscountValue))) / 100;
+    }
+    return Math.min(base, Math.max(0, orderDiscountValue));
+  }, [subtotal, totalItemDiscounts, orderDiscountType, orderDiscountValue]);
+
+  const totalDiscount = totalItemDiscounts + orderDiscountAmount;
+  const netSubtotal = Math.max(0, subtotal - totalDiscount);
   const taxAmount = netSubtotal * (settings.taxRate / 100);
   const totalAmount = netSubtotal + taxAmount;
   const changeAmount = Math.max(0, (parseFloat(paidCashAmount) || totalAmount) - totalAmount);
@@ -420,6 +441,7 @@ export const POSShell: React.FC = () => {
   const clearCart = () => {
     setCart([]);
     setSelectedCartIndex(null);
+    setOrderDiscountValue(0);
   };
 
   // Hold Current Sale ("تعليق الفاتورة")
@@ -519,6 +541,20 @@ export const POSShell: React.FC = () => {
     setIsProcessingSale(true);
 
     try {
+      // Validate that no item in cart is below min_selling_price
+      for (const item of cart) {
+        const netUnitPrice = item.unitPrice - (item.discountAmount / (item.quantity || 1));
+        const minPrice = item.minSellingPrice || 0;
+        if (minPrice > 0 && netUnitPrice < minPrice) {
+          showToast(
+            'error',
+            'عملية مرفوضة',
+            `المنتج "${item.productNameAr}" سعره الصافي (${netUnitPrice.toFixed(2)} ج.م) أقل من الحد الأدنى المسموح به للبيع (${minPrice.toFixed(2)} ج.م)`
+          );
+          setIsProcessingSale(false);
+          return;
+        }
+      }
       // Dynamic shift ID fallback if cashier shift system isn't active
       let shiftId = '00000000-0000-0000-0000-000000000001';
       const { data: openShiftData } = await (supabase.from('cashier_shifts') as any)
@@ -531,15 +567,19 @@ export const POSShell: React.FC = () => {
         shiftId = (openShiftData[0] as any).id;
       }
 
-      const itemsPayload = cart.map((item) => ({
-        variant_id: item.variantId,
-        quantity: item.quantity,
-        unit_price: item.unitPrice,
-        cost_price: item.costPrice,
-        discount_amount: item.discountAmount,
-        tax_amount: (item.unitPrice * item.quantity) * (settings.taxRate / 100),
-        total_price: item.unitPrice * item.quantity,
-      }));
+      const itemsPayload = cart.map((item) => {
+        const itemDiscount = (item.discountAmount || 0) + Math.max(0, (item.originalPrice - item.unitPrice) * item.quantity);
+        const unitPrice = item.originalPrice || item.unitPrice;
+        return {
+          variant_id: item.variantId,
+          quantity: item.quantity,
+          unit_price: unitPrice,
+          cost_price: item.costPrice,
+          discount_amount: itemDiscount,
+          tax_amount: ((unitPrice * item.quantity) - itemDiscount) * (settings.taxRate / 100),
+          total_price: (unitPrice * item.quantity) - itemDiscount,
+        };
+      });
 
       const paymentsPayload = [
         {
@@ -552,15 +592,15 @@ export const POSShell: React.FC = () => {
       const { data, error }: { data: any; error: any } = await (supabase.rpc as any)('rpc_create_sale', {
         p_cashier_shift_id: shiftId,
         p_customer_id: selectedCustomer.id || null,
-        p_subtotal: netSubtotal,
-        p_discount_amount: totalItemDiscounts,
+        p_subtotal: subtotal,
+        p_discount_amount: totalDiscount,
         p_coupon_id: null,
         p_tax_rate: settings.taxRate,
         p_tax_amount: taxAmount,
         p_total_amount: totalAmount,
         p_paid_amount: parseFloat(paidCashAmount) || totalAmount,
         p_change_amount: changeAmount,
-        p_notes: 'عملية بيع سريعة من POS',
+        p_notes: orderDiscountAmount > 0 ? `خصم فاتورة: -${orderDiscountAmount.toFixed(2)} ج.م` : 'عملية بيع من POS',
         p_items: itemsPayload,
         p_payments: paymentsPayload,
         p_idempotency_key: `POS-SALE-${Date.now()}-${Math.floor(Math.random()*10000)}`,
@@ -569,7 +609,7 @@ export const POSShell: React.FC = () => {
       if (error) {
         showToast('error', 'فشلت عملية البيع', error.message);
       } else {
-        showToast('success', 'تمت عملية البيع بنجاح!', `رقم الفاتورة: ${data?.invoice_number || 'INV-001'}`);
+        showToast('success', 'تمت عملية البيع بنجاح!', `رقم الفاتورة: #${data?.invoice_number || '1'}`);
 
         // Process Customer Loyalty Points
         if (selectedCustomer.id && totalAmount > 0) {
@@ -604,9 +644,9 @@ export const POSShell: React.FC = () => {
 
         // Set up receipt print data
         setCompletedSale({
-          invoiceNumber: data?.invoice_number || 'INV-001',
+          invoiceNumber: (data?.invoice_number || '1').replace(/^INV-0*/i, '') || '1',
           createdAt: new Date().toISOString(),
-          cashierName: user?.email || 'الكاشير',
+          cashierName: user?.fullName || user?.user_metadata?.full_name || localStorage.getItem('admin_display_name') || 'المالك / البائع',
           customerName: selectedCustomer.name,
           items: cart.map((i) => ({
             productNameAr: i.productNameAr,
@@ -752,11 +792,13 @@ export const POSShell: React.FC = () => {
                       <div>
                         <div className="flex items-center justify-between gap-1 mb-1">
                           <span className="text-[10px] text-indigo-400 font-mono font-semibold">{pv.sku}</span>
-                          <span
-                            className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0 shadow-sm"
-                            style={{ backgroundColor: pv.colors?.hex_code || '#000' }}
-                            title={pv.colors?.name_ar}
-                          />
+                          {pv.colors?.hex_code ? (
+                            <span
+                              className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0 shadow-sm"
+                              style={{ backgroundColor: pv.colors.hex_code }}
+                              title={pv.colors.name_ar}
+                            />
+                          ) : null}
                         </div>
                         <h4 className="text-xs font-bold text-slate-100 line-clamp-2 leading-snug group-hover:text-indigo-300 transition-colors">
                           {pv.products?.name_ar}
@@ -765,7 +807,13 @@ export const POSShell: React.FC = () => {
 
                       <div className="pt-2 border-t border-slate-800/60">
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] text-slate-400">مقاس: <strong className="text-slate-200">{pv.sizes?.code}</strong></span>
+                          <span className="text-[10px] text-slate-400">
+                            {pv.sizes?.code ? (
+                              <>مقاس: <strong className="text-slate-200">{pv.sizes.code}</strong></>
+                            ) : (
+                              <span className="text-slate-400">منتج قياسي</span>
+                            )}
+                          </span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
                             stock > 5 ? 'bg-slate-800 text-slate-300' : stock > 0 ? 'bg-amber-950 text-amber-300' : 'bg-rose-950 text-rose-300'
                           }`}>
@@ -773,14 +821,14 @@ export const POSShell: React.FC = () => {
                           </span>
                         </div>
 
-                        <div className="flex items-baseline justify-between mt-1">
+                        <div className="flex flex-col mt-1">
                           <span className="text-sm font-black text-emerald-400 font-mono">
-                            {Number(pv.discount_price || pv.selling_price).toFixed(2)}{' '}
+                            {Number(pv.selling_price).toFixed(2)}{' '}
                             <span className="text-[10px] font-sans text-slate-400">ج.م</span>
                           </span>
-                          {pv.discount_price && (
-                            <span className="text-[10px] text-slate-500 line-through font-mono">
-                              {Number(pv.selling_price).toFixed(2)}
+                          {Number(pv.min_selling_price || pv.products?.min_selling_price || 0) > 0 && (
+                            <span className="text-[10px] text-amber-400 font-medium">
+                              أقل سعر: <strong className="font-mono">{Number(pv.min_selling_price || pv.products?.min_selling_price).toFixed(2)}</strong> ج.م
                             </span>
                           )}
                         </div>
@@ -855,11 +903,21 @@ export const POSShell: React.FC = () => {
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <h5 className="text-xs font-bold text-slate-100 truncate">{item.productNameAr}</h5>
-                        <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
-                          <span>المقاس: <strong className="text-slate-200">{item.sizeCode}</strong></span>
-                          <span>•</span>
-                          <span>اللون: <strong className="text-slate-200">{item.colorNameAr}</strong></span>
-                        </div>
+                        {(item.sizeCode && !['N/A', 'Std', 'عام', 'غير محدد'].includes(item.sizeCode)) ||
+                        (item.colorNameAr && !['عام', 'بدون', 'غير محدد'].includes(item.colorNameAr)) ? (
+                          <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                            {item.sizeCode && !['N/A', 'Std', 'عام', 'غير محدد'].includes(item.sizeCode) && (
+                              <span>المقاس: <strong className="text-slate-200">{item.sizeCode}</strong></span>
+                            )}
+                            {item.sizeCode && !['N/A', 'Std', 'عام', 'غير محدد'].includes(item.sizeCode) &&
+                             item.colorNameAr && !['عام', 'بدون', 'غير محدد'].includes(item.colorNameAr) && (
+                              <span>•</span>
+                            )}
+                            {item.colorNameAr && !['عام', 'بدون', 'غير محدد'].includes(item.colorNameAr) && (
+                              <span>اللون: <strong className="text-slate-200">{item.colorNameAr}</strong></span>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
 
                       {/* Edit item modal trigger */}
@@ -920,10 +978,15 @@ export const POSShell: React.FC = () => {
                           {lineTotal.toFixed(2)} <span className="text-[10px] font-sans text-slate-400">ج.م</span>
                         </span>
                         {item.discountAmount > 0 && (
-                          <span className="text-[9px] text-amber-400 block">
+                          <span className="text-[9px] text-amber-400 block font-medium">
                             (خصم: {item.discountAmount.toFixed(2)})
                           </span>
                         )}
+                        {item.minSellingPrice && item.minSellingPrice > 0 ? (
+                          <span className="text-[9px] text-amber-300/90 block font-mono">
+                            أقل سعر: {item.minSellingPrice.toFixed(2)} ج.م
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -1006,9 +1069,84 @@ export const POSShell: React.FC = () => {
         maxWidth="md"
       >
         <div className="space-y-4 font-sans" dir="rtl">
-          <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl text-center shadow-inner">
-            <span className="text-xs text-slate-400 block mb-1">المبلغ الإجمالي المطلوبة سداده</span>
-            <span className="text-3xl font-black text-emerald-400 font-mono">{totalAmount.toFixed(2)} ج.م</span>
+          {/* Invoice Discount Section */}
+          <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                <Tag className="w-4 h-4 text-amber-400" />
+                <span>خصم الفاتورة الإجمالي:</span>
+              </label>
+              <div className="flex bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setOrderDiscountType('flat')}
+                  className={`px-2.5 py-1 rounded-md font-bold transition-all ${
+                    orderDiscountType === 'flat'
+                      ? 'bg-amber-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  مبلغ ثابت (ج.م)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOrderDiscountType('percentage')}
+                  className={`px-2.5 py-1 rounded-md font-bold transition-all ${
+                    orderDiscountType === 'percentage'
+                      ? 'bg-amber-600 text-white shadow'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  نسبة مئوية (%)
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-2 items-center">
+              <Input
+                type="number"
+                min={0}
+                step="0.5"
+                placeholder="أدخل قيمة الخصم على الفاتورة..."
+                value={orderDiscountValue || ''}
+                onChange={(e) => setOrderDiscountValue(Math.max(0, parseFloat(e.target.value) || 0))}
+                icon={orderDiscountType === 'percentage' ? <Percent className="w-4 h-4 text-slate-400" /> : <DollarSign className="w-4 h-4 text-slate-400" />}
+                className="flex-1"
+              />
+              {orderDiscountAmount > 0 && (
+                <span className="text-xs font-mono font-bold text-amber-400 shrink-0 bg-amber-950/60 px-3 py-2 rounded-xl border border-amber-800/40">
+                  خصم: -{orderDiscountAmount.toFixed(2)} ج.م
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Financial Breakdown Summary */}
+          <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1 text-xs">
+            <div className="flex justify-between text-slate-400">
+              <span>المجموع الفرعي (قبل الخصم):</span>
+              <span className="font-mono">{subtotal.toFixed(2)} ج.م</span>
+            </div>
+            {totalItemDiscounts > 0 && (
+              <div className="flex justify-between text-amber-400">
+                <span>خصومات الأصناف:</span>
+                <span className="font-mono">-{totalItemDiscounts.toFixed(2)} ج.م</span>
+              </div>
+            )}
+            {orderDiscountAmount > 0 && (
+              <div className="flex justify-between text-amber-400 font-bold">
+                <span>خصم الفاتورة الإجمالي:</span>
+                <span className="font-mono">-{orderDiscountAmount.toFixed(2)} ج.م</span>
+              </div>
+            )}
+            <div className="flex justify-between text-slate-400">
+              <span>ضريبة القيمة المضافة ({settings.taxRate}%):</span>
+              <span className="font-mono">+{taxAmount.toFixed(2)} ج.م</span>
+            </div>
+            <div className="flex justify-between text-base font-black text-white pt-1.5 border-t border-slate-800">
+              <span>الإجمالي النهائي الصافي للدفع:</span>
+              <span className="font-mono text-emerald-400 text-xl">{totalAmount.toFixed(2)} ج.م</span>
+            </div>
           </div>
 
           <div>

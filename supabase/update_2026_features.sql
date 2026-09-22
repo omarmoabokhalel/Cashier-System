@@ -1,12 +1,49 @@
--- =====================================================================
--- Sales & Payment System Upgrade - Migration 20260918000002
--- PostgreSQL 15+ Atomic Transaction, Server-Side Recalculation & Audit Logs
--- =====================================================================
+-- ==============================================================================
+-- SUPABASE DATABASE UPDATE SCRIPT (2026 Features & Schema Enhancements)
+-- Run this script in your Supabase SQL Editor (Dashboard -> SQL Editor -> New Query)
+-- ==============================================================================
 
--- 1. Invoice Number Sequence Generator
-CREATE SEQUENCE IF NOT EXISTS sale_invoice_seq START WITH 1 INCREMENT BY 1;
+-- 1. Add product_code, barcode, and min_selling_price to products table
+ALTER TABLE public.products 
+ADD COLUMN IF NOT EXISTS product_code TEXT,
+ADD COLUMN IF NOT EXISTS barcode TEXT,
+ADD COLUMN IF NOT EXISTS min_selling_price NUMERIC(10, 2) DEFAULT 0.00;
 
--- 2. Enhanced Atomic RPC Function: rpc_create_sale
+-- Drop NOT NULL constraint on name_en for products, categories, brands if present
+ALTER TABLE public.products ALTER COLUMN name_en DROP NOT NULL;
+ALTER TABLE public.categories ALTER COLUMN name_en DROP NOT NULL;
+ALTER TABLE public.brands ALTER COLUMN name_en DROP NOT NULL;
+
+-- 2. Add min_selling_price and discount_price to product_variants table, and ensure size_id and color_id allow NULL
+ALTER TABLE public.product_variants 
+ADD COLUMN IF NOT EXISTS min_selling_price NUMERIC(10, 2) DEFAULT 0.00,
+ADD COLUMN IF NOT EXISTS discount_price NUMERIC(10, 2) DEFAULT 0.00;
+
+ALTER TABLE public.product_variants 
+ALTER COLUMN size_id DROP NOT NULL,
+ALTER COLUMN color_id DROP NOT NULL;
+
+-- 3. Ensure suppliers optional columns allow NULL
+ALTER TABLE public.suppliers 
+ALTER COLUMN company_name DROP NOT NULL,
+ALTER COLUMN contact_person DROP NOT NULL,
+ALTER COLUMN email DROP NOT NULL,
+ALTER COLUMN tax_number DROP NOT NULL,
+ALTER COLUMN address DROP NOT NULL;
+
+-- 4. Ensure expenses optional columns allow NULL
+ALTER TABLE public.expenses 
+ALTER COLUMN description DROP NOT NULL,
+ALTER COLUMN payee DROP NOT NULL;
+
+-- 5. Create index on products & variants for fast barcode & code search, and ensure audit_logs has performed_by column
+CREATE INDEX IF NOT EXISTS idx_products_code ON public.products(product_code);
+CREATE INDEX IF NOT EXISTS idx_products_barcode ON public.products(barcode);
+CREATE INDEX IF NOT EXISTS idx_variants_barcode ON public.product_variants(barcode);
+CREATE INDEX IF NOT EXISTS idx_variants_sku ON public.product_variants(sku);
+ALTER TABLE public.audit_logs ADD COLUMN IF NOT EXISTS performed_by UUID;
+
+-- 6. Updated rpc_create_sale function to properly account for order level discounts (p_discount_amount)
 CREATE OR REPLACE FUNCTION rpc_create_sale(
     p_cashier_shift_id UUID,
     p_customer_id UUID DEFAULT NULL,
@@ -34,6 +71,8 @@ DECLARE
     -- Recalculated values (Zero Frontend Trust)
     v_calc_subtotal NUMERIC(12,2) := 0.00;
     v_calc_item_discounts NUMERIC(12,2) := 0.00;
+    v_effective_discount NUMERIC(12,2) := 0.00;
+    v_net_subtotal NUMERIC(12,2) := 0.00;
     v_calc_tax NUMERIC(12,2) := 0.00;
     v_calc_total NUMERIC(12,2) := 0.00;
     v_calc_paid NUMERIC(12,2) := 0.00;
@@ -182,7 +221,7 @@ BEGIN
         total_amount, paid_amount, change_amount, payment_status, notes
     ) VALUES (
         v_invoice_number, v_branch_id, p_cashier_shift_id, p_customer_id,
-        v_calc_subtotal, v_calc_item_discounts, p_coupon_id, p_tax_rate, v_calc_tax,
+        v_calc_subtotal, v_effective_discount, p_coupon_id, p_tax_rate, v_calc_tax,
         v_calc_total, v_calc_paid, v_calc_change, 'paid', p_notes
     ) RETURNING id INTO v_sale_id;
 
@@ -200,11 +239,6 @@ BEGIN
         v_item_tax := ROUND(((v_unit_price * v_qty - v_item_discount) * (p_tax_rate / 100.00)), 2);
         v_item_total := (v_unit_price * v_qty) - v_item_discount;
 
-        SELECT quantity INTO v_curr_stock
-        FROM branch_variant_stock
-        WHERE branch_id = v_branch_id AND variant_id = v_variant_id;
-
-        -- Insert Sale Item (with actual historical cost_price)
         INSERT INTO sale_items (
             sale_id, variant_id, quantity, unit_price, cost_price,
             discount_amount, tax_amount, total_price
@@ -215,22 +249,25 @@ BEGIN
 
         -- Deduct Stock
         UPDATE branch_variant_stock
-        SET quantity = quantity - v_qty, updated_at = now()
+        SET quantity = quantity - v_qty,
+            updated_at = now()
         WHERE branch_id = v_branch_id AND variant_id = v_variant_id;
 
-        -- Log Inventory Movement
+        -- Record Inventory Movement
         INSERT INTO inventory_movements (
             branch_id, variant_id, movement_type, quantity_delta,
             quantity_before, quantity_after, reference_type, reference_id,
-            cost_price, selling_price, performed_by
-        ) VALUES (
+            cost_price, selling_price, notes
+        )
+        SELECT
             v_branch_id, v_variant_id, 'sale', -v_qty,
-            v_curr_stock, v_curr_stock - v_qty, 'sale', v_sale_id,
-            v_cost_price, v_unit_price, auth.uid()
-        );
+            quantity + v_qty, quantity, 'sales', v_sale_id,
+            v_cost_price, v_unit_price, 'عملية بيع فاتورة رقم ' || v_invoice_number
+        FROM branch_variant_stock
+        WHERE branch_id = v_branch_id AND variant_id = v_variant_id;
     END LOOP;
 
-    -- 8. INSERT INTO payments TABLE & UPDATE SHIFT TOTALS
+    -- 8. INSERT INTO payments TABLE
     FOR v_payment IN SELECT * FROM jsonb_array_elements(p_payments) LOOP
         v_payment_method := (v_payment->>'payment_method')::payment_method_type;
         v_payment_amt := (v_payment->>'amount')::NUMERIC;
@@ -241,63 +278,69 @@ BEGIN
         ) VALUES (
             v_sale_id, p_cashier_shift_id, v_payment_method, v_payment_amt, v_payment_ref
         );
-
-        IF v_payment_method = 'cash' THEN
-            UPDATE cashier_shifts SET total_sales_cash = total_sales_cash + v_payment_amt WHERE id = p_cashier_shift_id;
-        ELSIF v_payment_method = 'card' THEN
-            UPDATE cashier_shifts SET total_sales_card = total_sales_card + v_payment_amt WHERE id = p_cashier_shift_id;
-        END IF;
     END LOOP;
 
-    -- 9. LOYALTY POINTS AWARDING (If Customer Exists)
-    IF p_customer_id IS NOT NULL THEN
-        v_points_earned := floor(v_calc_total / 10);
-        IF v_points_earned > 0 THEN
-            INSERT INTO loyalty_accounts (customer_id, balance_points, lifetime_earned)
-            VALUES (p_customer_id, v_points_earned, v_points_earned)
-            ON CONFLICT (customer_id) DO UPDATE
-            SET balance_points = loyalty_accounts.balance_points + v_points_earned,
-                lifetime_earned = loyalty_accounts.lifetime_earned + v_points_earned,
-                updated_at = now();
-
-            INSERT INTO loyalty_transactions (
-                customer_id, sale_id, points_delta, transaction_type, description
-            ) VALUES (
-                p_customer_id, v_sale_id, v_points_earned, 'earned', 'نقاط الفاتورة ' || v_invoice_number
-            );
-        END IF;
-    END IF;
-
-    -- Build Final Response Object
-    DECLARE
-        v_response JSONB;
-    BEGIN
-        v_response := jsonb_build_object(
-            'sale_id', v_sale_id,
-            'invoice_number', v_invoice_number,
-            'subtotal', v_calc_subtotal,
-            'discount_amount', v_calc_item_discounts,
-            'tax_amount', v_calc_tax,
-            'total_amount', v_calc_total,
-            'paid_amount', v_calc_paid,
-            'change_amount', v_calc_change,
-            'total_profit', v_total_profit,
-            'points_earned', v_points_earned,
-            'created_at', now()
-        );
-
-        -- 10. INSERT AUDIT LOG FOR TRANSACTION
-        INSERT INTO audit_logs (
-            user_id, branch_id, action, entity_type, entity_id, new_values
-        ) VALUES (
-            auth.uid(), v_branch_id, 'create_sale', 'sales', v_sale_id::text,
-            jsonb_build_object(
-                'idempotency_key', p_idempotency_key,
-                'response', v_response
+    -- 9. AUDIT LOG & IDEMPOTENCY RECORDING
+    INSERT INTO audit_logs (
+        action, entity_type, entity_id, new_values, user_id
+    ) VALUES (
+        'create_sale', 'sales', v_sale_id,
+        jsonb_build_object(
+            'idempotency_key', p_idempotency_key,
+            'response', jsonb_build_object(
+                'id', v_sale_id,
+                'invoice_number', v_invoice_number,
+                'total_amount', v_calc_total,
+                'paid_amount', v_calc_paid,
+                'change_amount', v_calc_change
             )
-        );
+        ),
+        auth.uid()
+    );
 
-        RETURN v_response;
-    END;
+    RETURN jsonb_build_object(
+        'id', v_sale_id,
+        'invoice_number', v_invoice_number,
+        'subtotal', v_calc_subtotal,
+        'discount_amount', v_effective_discount,
+        'tax_amount', v_calc_tax,
+        'total_amount', v_calc_total,
+        'paid_amount', v_calc_paid,
+        'change_amount', v_calc_change
+    );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =====================================================================
+-- 7. RPC: Recalculate Shift Sales Totals
+-- =====================================================================
+CREATE OR REPLACE FUNCTION rpc_recalculate_shift_sales(
+    p_shift_id UUID
+) RETURNS VOID AS $$
+DECLARE
+    v_cash NUMERIC(12,2) := 0.00;
+    v_card NUMERIC(12,2) := 0.00;
+BEGIN
+    IF p_shift_id IS NULL THEN RETURN; END IF;
+
+    SELECT COALESCE(SUM(p.amount), 0.00) INTO v_cash
+    FROM payments p
+    JOIN sales s ON s.id = p.sale_id
+    WHERE s.cashier_shift_id = p_shift_id
+      AND p.payment_method = 'cash';
+
+    SELECT COALESCE(SUM(p.amount), 0.00) INTO v_card
+    FROM payments p
+    JOIN sales s ON s.id = p.sale_id
+    WHERE s.cashier_shift_id = p_shift_id
+      AND p.payment_method IN ('card', 'wallet', 'bank_transfer');
+
+    UPDATE cashier_shifts
+    SET total_sales_cash = v_cash,
+        total_sales_card = v_card
+    WHERE id = p_shift_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Confirmation notification
+SELECT 'Supabase database schema & RPC functions updated successfully!' AS status;

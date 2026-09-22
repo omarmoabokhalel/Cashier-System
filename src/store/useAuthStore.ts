@@ -21,6 +21,9 @@ interface AuthStore {
   hasRole: (role: UserRoleCode | UserRoleCode[]) => boolean;
   canAccessBranch: (branchId: string) => boolean;
   
+  // Customization Actions
+  updateAdminName: (newName: string) => void;
+
   // Demo/Testing Role Switcher (for security testing)
   simulateRole: (roleCode: UserRoleCode) => void;
 }
@@ -31,30 +34,59 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   loading: true,
   error: null,
 
+  updateAdminName: (newName: string) => {
+    const cleanName = newName.trim();
+    if (!cleanName) return;
+    localStorage.setItem('admin_display_name', cleanName);
+    const currentUser = get().user;
+    if (currentUser) {
+      const updatedUser = { ...currentUser, fullName: cleanName };
+      set({ user: updatedUser });
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('pos_auth_user', JSON.stringify(updatedUser));
+      }
+    }
+  },
+
   initialize: async () => {
     set({ loading: true, error: null });
     try {
+      // Clean up legacy localStorage auth user if present
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('pos_auth_user');
+      }
+
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
         const profile = await fetchUserProfile(session.user.id, session.user.email || '');
+        if (profile) {
+          const savedAdminName = localStorage.getItem('admin_display_name');
+          if (savedAdminName && profile.roleCode === 'owner') {
+            profile.fullName = savedAdminName;
+          }
+        }
         set({ session, user: profile, loading: false });
-        localStorage.setItem('pos_auth_user', JSON.stringify(profile));
-        ensureOpenShiftOnLogin(profile.id);
+        sessionStorage.setItem('pos_auth_user', JSON.stringify(profile));
+        ensureOpenShiftOnLogin(profile?.id || '');
         return;
       }
 
-      // Check localStorage for saved session (for PIN / local cashier login)
-      const savedUserStr = localStorage.getItem('pos_auth_user');
+      // Check sessionStorage for saved session (for PIN / local cashier login)
+      const savedUserStr = sessionStorage.getItem('pos_auth_user');
       if (savedUserStr) {
         try {
           const savedUser = JSON.parse(savedUserStr);
           if (savedUser && savedUser.id) {
+            const savedAdminName = localStorage.getItem('admin_display_name');
+            if (savedAdminName && savedUser.roleCode === 'owner') {
+              savedUser.fullName = savedAdminName;
+            }
             set({ session: { user: { id: savedUser.id } }, user: savedUser, loading: false });
             ensureOpenShiftOnLogin(savedUser.id);
             return;
           }
         } catch (e) {
-          localStorage.removeItem('pos_auth_user');
+          sessionStorage.removeItem('pos_auth_user');
         }
       }
 
@@ -63,8 +95,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       supabase.auth.onAuthStateChange(async (_event, session) => {
         if (session) {
           const profile = await fetchUserProfile(session.user.id, session.user.email || '');
+          if (profile) {
+            const savedAdminName = localStorage.getItem('admin_display_name');
+            if (savedAdminName && profile.roleCode === 'owner') {
+              profile.fullName = savedAdminName;
+            }
+          }
           set({ session, user: profile, loading: false });
-          localStorage.setItem('pos_auth_user', JSON.stringify(profile));
+          sessionStorage.setItem('pos_auth_user', JSON.stringify(profile));
         }
       });
     } catch (err: any) {
@@ -79,9 +117,15 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (!error && data.session) {
       const profile = await fetchUserProfile(data.session.user.id, email);
+      if (profile) {
+        const savedAdminName = localStorage.getItem('admin_display_name');
+        if (savedAdminName && profile.roleCode === 'owner') {
+          profile.fullName = savedAdminName;
+        }
+      }
       set({ session: data.session, user: profile, loading: false });
-      localStorage.setItem('pos_auth_user', JSON.stringify(profile));
-      ensureOpenShiftOnLogin(profile.id);
+      sessionStorage.setItem('pos_auth_user', JSON.stringify(profile));
+      ensureOpenShiftOnLogin(profile?.id || '');
       return true;
     }
 
@@ -101,7 +145,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
       const adminUser: UserProfile = {
         id: '00000000-0000-0000-0000-000000000001',
-        fullName: 'المالك / مدير المتجر الرئيسي',
+        fullName: localStorage.getItem('admin_display_name') || 'المالك / مدير المتجر الرئيسي',
         email: 'admin@store.com',
         roleCode: 'owner',
         roleNameAr: 'المالك (Owner)',
@@ -118,7 +162,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         isActive: true,
       };
       set({ user: adminUser, session: { user: { id: adminUser.id } }, loading: false });
-      localStorage.setItem('pos_auth_user', JSON.stringify(adminUser));
+      sessionStorage.setItem('pos_auth_user', JSON.stringify(adminUser));
       ensureOpenShiftOnLogin(adminUser.id);
       return true;
     }
@@ -136,7 +180,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         isActive: true,
       };
       set({ user: cashierUser, session: { user: { id: cashierUser.id } }, loading: false });
-      localStorage.setItem('pos_auth_user', JSON.stringify(cashierUser));
+      sessionStorage.setItem('pos_auth_user', JSON.stringify(cashierUser));
       ensureOpenShiftOnLogin(cashierUser.id);
       return true;
     }
@@ -179,8 +223,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           ] : ['view_dashboard', 'create_sale', 'create_return', 'create_exchange', 'view_products', 'manage_customers'],
           isActive: true,
         };
+        const savedAdminName = localStorage.getItem('admin_display_name');
+        if (savedAdminName && userProf.roleCode === 'owner') {
+          userProf.fullName = savedAdminName;
+        }
         set({ user: userProf, session: { user: { id: userProf.id } }, loading: false });
-        localStorage.setItem('pos_auth_user', JSON.stringify(userProf));
+        sessionStorage.setItem('pos_auth_user', JSON.stringify(userProf));
         ensureOpenShiftOnLogin(userProf.id);
         return true;
       }
@@ -193,7 +241,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     if (cleanPin === currentAdminPin || cleanPin === '1234') {
       const defaultAdmin: UserProfile = {
         id: '00000000-0000-0000-0000-000000000001',
-        fullName: 'المالك / مدير المتجر الرئيسي',
+        fullName: localStorage.getItem('admin_display_name') || 'المالك / مدير المتجر الرئيسي',
         email: 'admin@store.com',
         roleCode: 'owner',
         roleNameAr: 'المالك (Owner)',
@@ -210,7 +258,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         isActive: true,
       };
       set({ user: defaultAdmin, session: { user: { id: defaultAdmin.id } }, loading: false });
-      localStorage.setItem('pos_auth_user', JSON.stringify(defaultAdmin));
+      sessionStorage.setItem('pos_auth_user', JSON.stringify(defaultAdmin));
       ensureOpenShiftOnLogin(defaultAdmin.id);
       return true;
     }
@@ -224,6 +272,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       await autoCloseShiftOnLogout();
       await supabase.auth.signOut();
     } catch (e) {}
+    sessionStorage.removeItem('pos_auth_user');
     localStorage.removeItem('pos_auth_user');
     set({ user: null, session: null, error: null });
   },

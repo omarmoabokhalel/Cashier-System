@@ -77,11 +77,18 @@ export const ProductDetailsModal: React.FC<ProductDetailsModalProps> = ({
                 {product.product_variants?.map((pv: any) => (
                   <tr key={pv.id} className="hover:bg-slate-900/50">
                     <td className="p-3 font-bold text-slate-200 flex items-center gap-2">
-                      <span
-                        className="w-3 h-3 rounded-full border border-white/20 shrink-0"
-                        style={{ backgroundColor: pv.colors?.hex_code || '#000' }}
-                      />
-                      <span>{pv.colors?.name_ar} / {pv.sizes?.code}</span>
+                      {pv.colors?.hex_code ? (
+                        <span
+                          className="w-3 h-3 rounded-full border border-white/20 shrink-0"
+                          style={{ backgroundColor: pv.colors.hex_code }}
+                          title={pv.colors.name_ar}
+                        />
+                      ) : null}
+                      <span>
+                        {pv.colors?.name_ar || pv.sizes?.code
+                          ? `${pv.colors?.name_ar || 'بدون لون'} / ${pv.sizes?.code || 'بدون مقاس'}`
+                          : 'قياسي (بدون ألوان/مقاسات)'}
+                      </span>
                     </td>
                     <td className="p-3 font-mono text-indigo-300 font-semibold">{pv.sku}</td>
                     <td className="p-3 font-mono text-emerald-300 flex items-center gap-1">

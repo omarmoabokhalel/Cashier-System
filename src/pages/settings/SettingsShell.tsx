@@ -8,6 +8,8 @@ import {
   FileText, Database, Check, RefreshCw, AlertTriangle
 } from 'lucide-react';
 
+import { useAuthStore } from '../../store/useAuthStore';
+
 interface BranchSettings {
   id: string;
   name_ar: string;
@@ -31,12 +33,14 @@ interface AuditLog {
 }
 
 export const SettingsShell: React.FC = () => {
+  const { updateAdminName } = useAuthStore();
   const [activeTab, setActiveTab] = useState<string>('general');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Admin Security State
+  const [adminName, setAdminName] = useState(localStorage.getItem('admin_display_name') || 'المالك / مدير المتجر الرئيسي');
   const [adminPassword, setAdminPassword] = useState(localStorage.getItem('admin_custom_password') || '123456');
   const [adminPin, setAdminPin] = useState(localStorage.getItem('admin_pin_code') || '1234');
 
@@ -180,6 +184,7 @@ export const SettingsShell: React.FC = () => {
       localStorage.setItem('app_config', JSON.stringify(config));
       localStorage.setItem('admin_custom_password', adminPassword);
       localStorage.setItem('admin_pin_code', adminPin);
+      updateAdminName(adminName);
       window.dispatchEvent(new Event('storage'));
 
       // Log Audit Event
@@ -190,7 +195,7 @@ export const SettingsShell: React.FC = () => {
         new_values: config
       });
 
-      showToast('success', 'تم حفظ جميع الإعدادات وتحديث بيانات الفاتورة بنجاح!');
+      showToast('success', 'تم حفظ جميع الإعدادات وتحديث بيانات الفاتورة واسم البائع بنجاح!');
     } catch (err: any) {
       console.error('Save error:', err);
       showToast('error', 'حدث خطأ أثناء حفظ الإعدادات');
@@ -381,7 +386,20 @@ export const SettingsShell: React.FC = () => {
                 </h3>
                 
                 <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-4 text-xs">
-                  <h4 className="font-bold text-sky-400 text-sm">تغيير بيانات الدخول الخاصة بالمالك (Admin):</h4>
+                  <h4 className="font-bold text-sky-400 text-sm">تغيير بيانات الدخول واسم البائع المطبوع بالفاتورة (Admin / Owner):</h4>
+                  
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-semibold">اسم المدير / البائع المطبوع على الفاتورة والتقارير *</label>
+                    <input
+                      type="text"
+                      value={adminName}
+                      onChange={(e) => setAdminName(e.target.value)}
+                      placeholder="أدخل اسم المدير / البائع (مثال: عمر أبو خليل)"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-emerald-500 font-bold"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-1 block">هذا الاسم يظهر على الفواتير، الإيصالات الحرارية، وسجلات البيع بدلاً من كلمة "admin".</span>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-slate-400 mb-1 font-semibold">كلمة مرور المالك الجديد (Password)</label>

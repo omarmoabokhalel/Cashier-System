@@ -44,10 +44,10 @@ export const InventoryShell: React.FC = () => {
         supabase.from('branch_variant_stock').select(`
           *,
           product_variants(
-            id, sku, barcode, selling_price, cost_price,
+            id, sku, barcode, selling_price, cost_price, deleted_at,
             sizes(code, name_ar),
             colors(name_ar, hex_code),
-            products(id, name_ar, min_stock_alert, categories(name_ar))
+            products(id, name_ar, min_stock_alert, deleted_at, categories(name_ar))
           )
         `).order('updated_at', { ascending: false }),
         supabase.from('inventory_movements').select(`
@@ -75,8 +75,14 @@ export const InventoryShell: React.FC = () => {
     fetchInventoryData();
   }, []);
 
-  // Filter Inventory
-  const filteredStock = inventoryStock.filter((item) => {
+  // Filter out deleted products and variants
+  const activeStock = inventoryStock.filter((item) => {
+    const pv = item.product_variants;
+    return pv && !pv.deleted_at && pv.products && !pv.products.deleted_at;
+  });
+
+  // Filter Inventory Datatable
+  const filteredStock = activeStock.filter((item) => {
     const searchLower = search.toLowerCase();
     const prodName = item.product_variants?.products?.name_ar?.toLowerCase() || '';
     const sku = item.product_variants?.sku?.toLowerCase() || '';
@@ -97,11 +103,11 @@ export const InventoryShell: React.FC = () => {
   });
 
   // Calculate Metrics
-  const totalInStockUnits = inventoryStock.reduce((acc, i) => acc + (i.quantity || 0), 0);
-  const lowStockCount = inventoryStock.filter(
+  const totalInStockUnits = activeStock.reduce((acc, i) => acc + (i.quantity || 0), 0);
+  const lowStockCount = activeStock.filter(
     (i) => i.quantity > 0 && i.quantity <= (i.product_variants?.products?.min_stock_alert || 5)
   ).length;
-  const outOfStockCount = inventoryStock.filter((i) => i.quantity === 0).length;
+  const outOfStockCount = activeStock.filter((i) => i.quantity === 0).length;
 
   return (
     <div className="p-6 space-y-6 font-sans select-none" dir="rtl">
@@ -233,12 +239,17 @@ export const InventoryShell: React.FC = () => {
 
                           <td className="p-3.5">
                             <div className="flex items-center gap-2">
-                              <span
-                                className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0"
-                                style={{ backgroundColor: pv?.colors?.hex_code || '#000' }}
-                              />
+                              {pv?.colors?.hex_code ? (
+                                <span
+                                  className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0"
+                                  style={{ backgroundColor: pv.colors.hex_code }}
+                                  title={pv.colors.name_ar}
+                                />
+                              ) : null}
                               <span className="text-slate-200 font-semibold">
-                                {pv?.colors?.name_ar} / {pv?.sizes?.code}
+                                {pv?.colors?.name_ar || pv?.sizes?.code
+                                  ? `${pv?.colors?.name_ar || 'بدون لون'} / ${pv?.sizes?.code || 'بدون مقاس'}`
+                                  : 'قياسي (بدون ألوان/مقاسات)'}
                               </span>
                             </div>
                           </td>

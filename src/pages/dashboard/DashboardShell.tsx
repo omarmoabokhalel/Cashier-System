@@ -65,6 +65,7 @@ interface CashierActivityItem {
 }
 
 export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
+  const { user } = useAuthStore();
   const [loading, setLoading] = useState(true);
   const [isOwnerView, setIsOwnerView] = useState(false);
   const [activeShift, setActiveShift] = useState<any | null>(null);
@@ -542,52 +543,54 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         </div>
       )}
 
-      {/* LIVE CASHIER ACTIVITY FEED FOR OWNER */}
-      <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
-        <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-          <div className="flex items-center gap-2">
-            <Activity className="w-5 h-5 text-emerald-400" />
-            <h3 className="text-sm font-bold text-white">سجل العمليات والأنشطة اللحظية للكاشير (Live Cashier Audit Feed)</h3>
+      {/* LIVE CASHIER ACTIVITY FEED - VISIBLE TO OWNER ONLY */}
+      {user?.roleCode === 'owner' && (
+        <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
+          <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <Activity className="w-5 h-5 text-emerald-400" />
+              <h3 className="text-sm font-bold text-white">سجل العمليات والأنشطة اللحظية للكاشير (Live Cashier Audit Feed)</h3>
+            </div>
+            <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800/60 font-bold flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span>مراقبة لحظية من منظور المالك</span>
+            </span>
           </div>
-          <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800/60 font-bold flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-            <span>مراقبة لحظية من منظور المالك</span>
-          </span>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto custom-scrollbar">
-          {recentActivities.length === 0 ? (
-            <p className="text-xs text-slate-500 text-center col-span-2 py-6">لا توجد حركات كاشير مسجلة حالياً</p>
-          ) : (
-            recentActivities.map((act) => (
-              <div
-                key={act.id}
-                className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-xs hover:border-slate-700 transition-colors"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${
-                      act.type === 'sale' ? 'bg-emerald-400' : act.type === 'expense' ? 'bg-rose-400' : 'bg-amber-400'
-                    }`} />
-                    <span className="font-bold text-slate-100">{act.title}</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto custom-scrollbar">
+            {recentActivities.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center col-span-2 py-6">لا توجد حركات كاشير مسجلة حالياً</p>
+            ) : (
+              recentActivities.map((act) => (
+                <div
+                  key={act.id}
+                  className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-xs hover:border-slate-700 transition-colors"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${
+                        act.type === 'sale' ? 'bg-emerald-400' : act.type === 'expense' ? 'bg-rose-400' : 'bg-amber-400'
+                      }`} />
+                      <span className="font-bold text-slate-100">{act.title}</span>
+                    </div>
+                    <span className="text-[11px] text-slate-400 block">{act.subtitle}</span>
+                    <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
+                      <span>المنفذ: <strong className="text-indigo-300">{act.performer}</strong></span>
+                      <span>الوقت: {new Date(act.timestamp).toLocaleTimeString('ar-EG')}</span>
+                    </div>
                   </div>
-                  <span className="text-[11px] text-slate-400 block">{act.subtitle}</span>
-                  <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
-                    <span>المنفذ: <strong className="text-indigo-300">{act.performer}</strong></span>
-                    <span>الوقت: {new Date(act.timestamp).toLocaleTimeString('ar-EG')}</span>
+
+                  <div className="text-left font-mono font-bold text-sm">
+                    <span className={act.type === 'sale' ? 'text-emerald-400' : act.type === 'expense' ? 'text-rose-400' : 'text-amber-400'}>
+                      {act.type === 'expense' ? '-' : '+'}{act.amount.toFixed(2)} ج.م
+                    </span>
                   </div>
                 </div>
-
-                <div className="text-left font-mono font-bold text-sm">
-                  <span className={act.type === 'sale' ? 'text-emerald-400' : act.type === 'expense' ? 'text-rose-400' : 'text-amber-400'}>
-                    {act.type === 'expense' ? '-' : '+'}{act.amount.toFixed(2)} ج.م
-                  </span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </Card>
+              ))
+            )}
+          </div>
+        </Card>
+      )}
     </div>
   );
 };

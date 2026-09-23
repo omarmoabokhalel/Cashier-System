@@ -82,11 +82,15 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   const getSellerName = (s: SaleRecord) => {
-    const adminName = localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير';
+    if (s.notes && s.notes.includes('seller:')) {
+      const match = s.notes.match(/seller:([^|]+)/);
+      if (match && match[1]?.trim()) {
+        return match[1].trim();
+      }
+    }
     if (s.cashier?.full_name) return s.cashier.full_name;
-    if (!s.cashier_id || s.cashier_id === '00000000-0000-0000-0000-000000000001') return adminName;
     if (s.cashier_id === '00000000-0000-0000-0000-000000000002') return 'أحمد الكاشير';
-    return adminName;
+    return localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير';
   };
 
   const fetchSalesData = async () => {
@@ -246,14 +250,16 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
   };
 
   const isOwnerCreatedInvoice = (s: SaleRecord) => {
-    if (s.notes && s.notes.includes('role:owner')) return true;
-    if (s.cashier_id === '00000000-0000-0000-0000-000000000001' && s.cashier_id !== user?.id) return true;
+    if (s.notes && s.notes.includes('role:cashier')) return false; // Explicitly cashier created
+    if (s.notes && s.notes.includes('role:owner')) return true; // Explicitly owner created
     if (s.cashier && (s.cashier as any).roles?.code === 'owner') return true;
-    const seller = getSellerName(s);
-    const adminName = localStorage.getItem('admin_display_name') || 'المالك / المدير';
-    if (seller === adminName || seller.includes('المالك') || seller.includes('مدير المتجر')) return true;
+    if (s.cashier_id === '00000000-0000-0000-0000-000000000001' && s.cashier_id !== user?.id && !s.notes?.includes('seller:')) return true;
     return false;
   };
+
+  const uniqueSellerNames = Array.from(
+    new Set(sales.map((s) => getSellerName(s)).filter(Boolean))
+  );
 
   // Filter Sales Logic
   const filteredSales = sales.filter((s) => {
@@ -265,7 +271,9 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
     // 1. Shift / Date Filter
     if (shiftFilter === 'current') {
       if (activeShift?.id) {
-        if (s.cashier_shift_id !== activeShift.id) return false;
+        if (s.cashier_shift_id !== activeShift.id && (!activeShift.opened_at || s.created_at < activeShift.opened_at)) {
+          return false;
+        }
       } else {
         // Fallback to today's date if no active open shift
         const todayStr = new Date().toISOString().split('T')[0];
@@ -278,12 +286,7 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
     // 2. Seller / Cashier Filter
     const sellerName = getSellerName(s);
     if (sellerFilter !== 'all') {
-      if (sellerFilter === 'admin') {
-        const adminName = localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير';
-        if (sellerName !== adminName && !sellerName.includes('المالك') && !sellerName.includes('مدير')) return false;
-      } else if (sellerFilter === 'cashier') {
-        if (!sellerName.includes('أحمد') && !sellerName.includes('كاشير')) return false;
-      }
+      if (sellerName !== sellerFilter) return false;
     }
 
     // 3. Search Text Query
@@ -390,8 +393,11 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
                 className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
               >
                 <option value="all">جميع البائعين</option>
-                <option value="admin">{localStorage.getItem('admin_display_name') || user?.fullName || 'المالك / المدير'}</option>
-                <option value="cashier">أحمد الكاشير</option>
+                {uniqueSellerNames.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -436,8 +442,15 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
               <tbody className="divide-y divide-slate-800/60">
                 {filteredSales.map((s) => (
                   <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="p-3 font-mono font-bold text-indigo-400">
-                      {s.invoice_number}
+                    <td className="p-3 font-mono font-bold">
+                      <button
+                        onClick={() => handleOpenReceipt(s)}
+                        className="text-indigo-400 hover:text-indigo-300 underline underline-offset-2 flex items-center gap-1 transition-colors"
+                        title="عرض وطباعة الفاتورة"
+                      >
+                        <Printer className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>{s.invoice_number}</span>
+                      </button>
                     </td>
 
                     <td className="p-3 text-slate-300">
@@ -491,6 +504,16 @@ export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
 
                     <td className="p-3 text-center">
                       <div className="flex items-center justify-center gap-1.5">
+                        <Button
+                          onClick={() => handleOpenReceipt(s)}
+                          size="sm"
+                          variant="secondary"
+                          className="bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/60 text-emerald-200 gap-1 text-[11px] px-2.5 py-1"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>طباعة</span>
+                        </Button>
+
                         <Button
                           onClick={() => {
                             localStorage.setItem('selected_return_invoice_number', s.invoice_number);

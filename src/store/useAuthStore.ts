@@ -289,7 +289,6 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   logout: async () => {
     try {
-      await autoCloseShiftOnLogout();
       await supabase.auth.signOut();
     } catch (e) {}
     sessionStorage.removeItem('pos_auth_user');

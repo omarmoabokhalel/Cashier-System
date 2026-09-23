@@ -368,7 +368,9 @@ const generateUUID = (): string => {
                     <th className="p-3">المنتج والاسم</th>
                     <th className="p-3">الفئة / الماركة</th>
                     <th className="p-3">سعر البيع الأساسي</th>
-                    <th className="p-3">سعر التكلفة</th>
+                    <PermissionGuard permission="view_cost_prices">
+                      <th className="p-3">سعر التكلفة</th>
+                    </PermissionGuard>
                     <th className="p-3">عدد الأصناف المتوفرة</th>
                     <th className="p-3 text-center">إجمالي المخزون</th>
                     <th className="p-3 text-center">الحالة</th>
@@ -416,9 +418,11 @@ const generateUUID = (): string => {
                           {Number(p.base_price || 0).toFixed(2)} <span className="text-[10px] font-sans text-slate-400">ج.م</span>
                         </td>
 
-                        <td className="p-3 font-mono text-slate-300">
-                          {Number(p.cost_price || 0).toFixed(2)} <span className="text-[10px] font-sans text-slate-400">ج.م</span>
-                        </td>
+                        <PermissionGuard permission="view_cost_prices">
+                          <td className="p-3 font-mono text-slate-300">
+                            {Number(p.cost_price || 0).toFixed(2)} <span className="text-[10px] font-sans text-slate-400">ج.م</span>
+                          </td>
+                        </PermissionGuard>
 
                         <td className="p-3">
                           <Badge variant="secondary" size="sm">

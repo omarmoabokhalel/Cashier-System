@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Dialog } from '../../components/ui/Dialog';
 import { useToast } from '../../components/ui/Toast';
+import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
 import {
   Landmark,
   PlusCircle,
@@ -24,8 +25,11 @@ import {
   Eye,
   Printer,
   Receipt,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { ReceiptPrintModal } from '../../components/pos/ReceiptPrintModal';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 
 import { useAuthStore } from '../../store/useAuthStore';
 
@@ -60,7 +64,13 @@ export const RegisterShell: React.FC = () => {
   const [movementType, setMovementType] = useState<'cash_in' | 'cash_out'>('cash_in');
   const [movementAmount, setMovementAmount] = useState('');
   const [movementReason, setMovementReason] = useState('');
+  const [personName, setPersonName] = useState('');
   const [isSubmittingMovement, setIsSubmittingMovement] = useState(false);
+
+  useEffect(() => {
+    const defaultName = user?.fullName || localStorage.getItem('admin_display_name') || '';
+    setPersonName(defaultName);
+  }, [user]);
 
   // Shift Close Modal State
   const [isCloseShiftModalOpen, setIsCloseShiftModalOpen] = useState(false);
@@ -77,6 +87,20 @@ export const RegisterShell: React.FC = () => {
   // Receipt Modal State
   const [selectedReceiptSale, setSelectedReceiptSale] = useState<any | null>(null);
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
+
+  // Edit Shift Modal State
+  const [editingShift, setEditingShift] = useState<any | null>(null);
+  const [isEditShiftModalOpen, setIsEditShiftModalOpen] = useState(false);
+  const [editShiftFormData, setEditShiftFormData] = useState({
+    opening_balance: '',
+    opened_at: '',
+    notes: '',
+  });
+  const [isSubmittingEditShift, setIsSubmittingEditShift] = useState(false);
+
+  // Delete Shift State
+  const [shiftToDelete, setShiftToDelete] = useState<any | null>(null);
+  const [isDeletingShift, setIsDeletingShift] = useState(false);
 
   useEffect(() => {
     fetchShiftData();
@@ -165,17 +189,18 @@ export const RegisterShell: React.FC = () => {
 
       if (activeData && activeData.length > 0) {
         const s = activeData[0];
+        const reconciled = await reconcileShiftTotals(s.id);
         setActiveShift({
           id: s.id,
           status: s.status,
           opened_at: s.opened_at,
           opening_balance: Number(s.opening_balance),
-          total_sales_cash: Number(s.total_sales_cash),
-          total_sales_card: Number(s.total_sales_card),
-          total_returns_cash: Number(s.total_returns_cash),
-          total_expenses: Number(s.total_expenses),
-          total_cash_in: Number(s.total_cash_in),
-          total_cash_out: Number(s.total_cash_out),
+          total_sales_cash: reconciled ? reconciled.totalSalesCash : Number(s.total_sales_cash),
+          total_sales_card: reconciled ? reconciled.totalSalesCard : Number(s.total_sales_card),
+          total_returns_cash: reconciled ? reconciled.totalReturnsCash : Number(s.total_returns_cash),
+          total_expenses: reconciled ? reconciled.totalExpenses : Number(s.total_expenses),
+          total_cash_in: reconciled ? reconciled.totalCashIn : Number(s.total_cash_in),
+          total_cash_out: reconciled ? reconciled.totalCashOut : Number(s.total_cash_out),
         });
       } else {
         setActiveShift(null);
@@ -210,6 +235,10 @@ export const RegisterShell: React.FC = () => {
   const handleRecordCashMovement = async (e: React.FormEvent) => {
     e.preventDefault();
     const amt = parseFloat(movementAmount);
+    if (!personName.trim()) {
+      showToast('warning', 'اسم الشخص مطلوب', 'يرجى إدخال اسم الشخص الذي يسحب أو يودع المبلغ (إجباري)');
+      return;
+    }
     if (!activeShift || !amt || amt <= 0 || !movementReason.trim()) {
       showToast('warning', 'بيانات ناقصة', 'يرجى إدخال مبلغ صحيح والسبب');
       return;
@@ -217,11 +246,12 @@ export const RegisterShell: React.FC = () => {
 
     setIsSubmittingMovement(true);
     try {
+      const fullReason = `بواسطة: ${personName.trim()} | السبب: ${movementReason.trim()}`;
       const { data, error }: { data: any; error: any } = await (supabase.rpc as any)('rpc_record_cash_movement', {
         p_cashier_shift_id: activeShift.id,
         p_movement_type: movementType,
         p_amount: amt,
-        p_reason: movementReason.trim(),
+        p_reason: fullReason,
       });
 
       if (error) {
@@ -306,6 +336,75 @@ export const RegisterShell: React.FC = () => {
     }
   };
 
+  const handleOpenEditShift = (shift: any) => {
+    setEditingShift(shift);
+    const d = new Date(shift.opened_at);
+    const tzOffset = d.getTimezoneOffset() * 60000;
+    const localISO = new Date(d.getTime() - tzOffset).toISOString().slice(0, 16);
+
+    setEditShiftFormData({
+      opening_balance: String(shift.opening_balance || 0),
+      opened_at: localISO,
+      notes: shift.notes || '',
+    });
+    setIsEditShiftModalOpen(true);
+  };
+
+  const handleUpdateShift = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingShift) return;
+
+    setIsSubmittingEditShift(true);
+    try {
+      const updatedOpenedAt = editShiftFormData.opened_at
+        ? new Date(editShiftFormData.opened_at).toISOString()
+        : editingShift.opened_at;
+
+      const { error } = await (supabase.from('cashier_shifts') as any)
+        .update({
+          opening_balance: parseFloat(editShiftFormData.opening_balance) || 0,
+          opened_at: updatedOpenedAt,
+          notes: editShiftFormData.notes.trim() || null,
+        })
+        .eq('id', editingShift.id);
+
+      if (error) {
+        showToast('error', 'فشل تعديل الوردية', error.message);
+      } else {
+        showToast('success', 'تم تعديل الوردية بنجاح!');
+        setIsEditShiftModalOpen(false);
+        setEditingShift(null);
+        fetchShiftData();
+      }
+    } catch (e: any) {
+      showToast('error', 'خطأ أثناء التعديل', e.message);
+    } finally {
+      setIsSubmittingEditShift(false);
+    }
+  };
+
+  const handleConfirmDeleteShift = async () => {
+    if (!shiftToDelete) return;
+    setIsDeletingShift(true);
+    try {
+      const { error } = await (supabase.from('cashier_shifts') as any)
+        .delete()
+        .eq('id', shiftToDelete.id);
+
+      if (error) {
+        showToast('error', 'فشل مسح الوردية', error.message);
+      } else {
+        showToast('success', 'تم مسح الوردية بنجاح');
+        setShiftToDelete(null);
+        fetchShiftData();
+      }
+    } catch (e: any) {
+      showToast('error', 'خطأ أثناء المسح', e.message);
+    } finally {
+      setIsDeletingShift(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6 font-sans" dir="rtl">
       {/* HEADER */}
@@ -368,76 +467,110 @@ export const RegisterShell: React.FC = () => {
       </div>
 
       {/* ACTIVE SHIFT METRICS DASHBOARD */}
+      {/* ACTIVE SHIFT NET CASH HERO DISPLAY */}
       {activeShift ? (
-        <div className="space-y-4">
-          <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
-                <h3 className="text-sm font-bold text-white">الوردية الحالية مفتوحة</h3>
-                <span className="text-xs text-slate-400 flex items-center gap-1">
-                  <Clock className="w-3.5 h-3.5" /> منذ {new Date(activeShift.opened_at).toLocaleTimeString('ar-EG')}
-                </span>
+        <div className="space-y-4 font-sans" dir="rtl">
+          {/* PROMINENT NET CASH HERO CARD */}
+          <Card className="p-6 bg-gradient-to-br from-emerald-950/90 via-slate-900 to-slate-950 border-2 border-emerald-500/80 rounded-3xl shadow-2xl space-y-6 relative overflow-hidden">
+            <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-6 border-b border-emerald-800/60 pb-5">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="w-3.5 h-3.5 rounded-full bg-emerald-400 animate-ping" />
+                  <span className="text-xs font-bold text-emerald-300 uppercase tracking-wider">
+                    الرصيد الفعلي الصافي المتبقي بالخزنة الآن (Net Expected Cash Box)
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-3 mt-1">
+                  <span className="text-4xl md:text-5xl font-black text-emerald-400 font-mono tracking-tight drop-shadow-[0_4px_12px_rgba(52,211,153,0.3)]">
+                    {expectedCash.toFixed(2)}
+                  </span>
+                  <span className="text-lg font-bold text-emerald-300">جنيه مصري (ج.م)</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-2 font-medium">
+                  * الصافي المحسوب آلياً = (رصيد الافتتاح + مبيعات الكاش + الإيداعات) - (المرتجعات + السحوبات + المصروفات)
+                </p>
               </div>
-              <div className="flex items-center gap-2">
+
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   onClick={() => handleViewShiftDetails(activeShift)}
                   size="sm"
                   variant="secondary"
-                  className="bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800 text-xs gap-1.5"
+                  className="bg-indigo-950/90 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/80 text-xs font-bold gap-1.5 px-3 py-2"
                 >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>استعراض فواتير الوردية الحالية</span>
+                  <Eye className="w-4 h-4 text-indigo-400" />
+                  <span>استعراض فواتير الوردية</span>
                 </Button>
-                <Badge variant="primary" size="sm">مفتوحة</Badge>
+
+                <Button
+                  onClick={() => handleOpenEditShift(activeShift)}
+                  size="sm"
+                  variant="secondary"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold gap-1.5 px-3 py-2"
+                >
+                  <Pencil className="w-4 h-4 text-indigo-400" />
+                  <span>تعديل الوردية</span>
+                </Button>
+
+                <Button
+                  onClick={() => setShiftToDelete(activeShift)}
+                  size="sm"
+                  variant="secondary"
+                  className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-800/60 text-xs font-bold gap-1.5 px-3 py-2"
+                >
+                  <Trash2 className="w-4 h-4 text-rose-400" />
+                  <span>حذف الوردية</span>
+                </Button>
+
+                <Badge variant="primary" size="md" className="bg-emerald-600 text-white font-bold px-3 py-1.5">
+                  الوردية مفتوحة
+                </Badge>
               </div>
             </div>
 
-            {/* BREAKDOWN METRICS GRID */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 text-xs">
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-slate-400 block">رصيد الافتتاح</span>
-                <span className="font-mono font-bold text-slate-200">{activeShift.opening_balance.toFixed(2)} ج.م</span>
-              </div>
+            {/* DETAILED BREAKDOWN UNDERNEATH */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-slate-300">تفاصيل وتفكيك حساب الصافي المتوقع بالخزنة:</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+                <div className="bg-slate-950/90 p-3.5 rounded-2xl border border-slate-800 space-y-1">
+                  <span className="text-[10px] text-slate-400 block font-bold">1. رصيد الافتتاح (Opening)</span>
+                  <span className="font-mono font-bold text-white text-sm">{activeShift.opening_balance.toFixed(2)} ج.م</span>
+                </div>
 
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-emerald-400 block flex items-center gap-1">
-                  <ArrowUpRight className="w-3 h-3" /> مبيعات كاش (+)
-                </span>
-                <span className="font-mono font-bold text-emerald-400">+{activeShift.total_sales_cash.toFixed(2)} ج.م</span>
-              </div>
+                <div className="bg-emerald-950/60 p-3.5 rounded-2xl border border-emerald-800/60 space-y-1">
+                  <span className="text-[10px] text-emerald-400 block font-bold flex items-center gap-1">
+                    <ArrowUpRight className="w-3.5 h-3.5" /> 2. + مبيعات الكاش
+                  </span>
+                  <span className="font-mono font-bold text-emerald-400 text-sm">+{activeShift.total_sales_cash.toFixed(2)} ج.م</span>
+                </div>
 
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-indigo-400 block flex items-center gap-1">
-                  <ArrowUpRight className="w-3 h-3" /> إيداعات (+)
-                </span>
-                <span className="font-mono font-bold text-indigo-400">+{activeShift.total_cash_in.toFixed(2)} ج.م</span>
-              </div>
+                <div className="bg-indigo-950/60 p-3.5 rounded-2xl border border-indigo-800/60 space-y-1">
+                  <span className="text-[10px] text-indigo-400 block font-bold flex items-center gap-1">
+                    <ArrowUpRight className="w-3.5 h-3.5" /> 3. + إيداعات الخزنة
+                  </span>
+                  <span className="font-mono font-bold text-indigo-400 text-sm">+{activeShift.total_cash_in.toFixed(2)} ج.م</span>
+                </div>
 
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-amber-400 block flex items-center gap-1">
-                  <RotateCcw className="w-3 h-3" /> مرتجعات كاش (-)
-                </span>
-                <span className="font-mono font-bold text-amber-400">-{activeShift.total_returns_cash.toFixed(2)} ج.م</span>
-              </div>
+                <div className="bg-amber-950/60 p-3.5 rounded-2xl border border-amber-800/60 space-y-1">
+                  <span className="text-[10px] text-amber-400 block font-bold flex items-center gap-1">
+                    <RotateCcw className="w-3.5 h-3.5" /> 4. - مرتجعات الكاش
+                  </span>
+                  <span className="font-mono font-bold text-amber-400 text-sm">-{activeShift.total_returns_cash.toFixed(2)} ج.م</span>
+                </div>
 
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-rose-400 block flex items-center gap-1">
-                  <ArrowDownLeft className="w-3 h-3" /> سحوبات (-)
-                </span>
-                <span className="font-mono font-bold text-rose-400">-{activeShift.total_cash_out.toFixed(2)} ج.م</span>
-              </div>
+                <div className="bg-rose-950/60 p-3.5 rounded-2xl border border-rose-800/60 space-y-1">
+                  <span className="text-[10px] text-rose-400 block font-bold flex items-center gap-1">
+                    <ArrowDownLeft className="w-3.5 h-3.5" /> 5. - سحوبات النقدية
+                  </span>
+                  <span className="font-mono font-bold text-rose-400 text-sm">-{activeShift.total_cash_out.toFixed(2)} ج.م</span>
+                </div>
 
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-rose-400 block flex items-center gap-1">
-                  <CircleDollarSign className="w-3 h-3" /> مصروفات (-)
-                </span>
-                <span className="font-mono font-bold text-rose-400">-{activeShift.total_expenses.toFixed(2)} ج.م</span>
-              </div>
-
-              <div className="bg-emerald-950/80 p-3 rounded-2xl border border-emerald-800 space-y-1 col-span-2 sm:col-span-1 shadow-lg shadow-emerald-600/10">
-                <span className="text-[10px] text-emerald-300 font-bold block">المتوقع بالخزنة</span>
-                <span className="font-mono font-black text-emerald-300 text-sm">{expectedCash.toFixed(2)} ج.م</span>
+                <div className="bg-rose-950/60 p-3.5 rounded-2xl border border-rose-800/60 space-y-1">
+                  <span className="text-[10px] text-rose-400 block font-bold flex items-center gap-1">
+                    <CircleDollarSign className="w-3.5 h-3.5" /> 6. - المصروفات
+                  </span>
+                  <span className="font-mono font-bold text-rose-400 text-sm">-{activeShift.total_expenses.toFixed(2)} ج.م</span>
+                </div>
               </div>
             </div>
           </Card>
@@ -497,7 +630,27 @@ export const RegisterShell: React.FC = () => {
                     className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] gap-1 px-2.5 py-1"
                   >
                     <Eye className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>فواتير الوردية والتفاصيل</span>
+                    <span>التفاصيل</span>
+                  </Button>
+
+                  <Button
+                    onClick={() => handleOpenEditShift(s)}
+                    size="sm"
+                    variant="secondary"
+                    className="bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 text-[11px] gap-1 px-2.5 py-1"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>تعديل</span>
+                  </Button>
+
+                  <Button
+                    onClick={() => setShiftToDelete(s)}
+                    size="sm"
+                    variant="secondary"
+                    className="bg-rose-950/80 hover:bg-rose-900 border border-rose-800/60 text-rose-200 text-[11px] gap-1 px-2.5 py-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>حذف</span>
                   </Button>
                 </div>
               </div>
@@ -576,7 +729,15 @@ export const RegisterShell: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 bg-slate-900">
-                    {shiftInvoices.map((inv) => (
+                    {shiftInvoices
+                      .filter((inv) => {
+                        if (user?.roleCode === 'cashier') {
+                          if (inv.notes && inv.notes.includes('role:owner')) return false;
+                          if (inv.cashier_id === '00000000-0000-0000-0000-000000000001' && inv.cashier_id !== user?.id) return false;
+                        }
+                        return true;
+                      })
+                      .map((inv) => (
                       <tr key={inv.id} className="hover:bg-slate-800/40">
                         <td className="p-2.5 font-mono font-bold text-indigo-400">
                           {inv.invoice_number}
@@ -674,6 +835,20 @@ export const RegisterShell: React.FC = () => {
       >
         <form onSubmit={handleRecordCashMovement} className="space-y-4 font-sans" dir="rtl">
           <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              {movementType === 'cash_in' ? 'اسم الشخص الذي يودع المبلغ * (إجباري)' : 'اسم الشخص الذي يسحب المبلغ * (إجباري)'}
+            </label>
+            <Input
+              type="text"
+              placeholder="أدخل اسم الشخص المنفذ..."
+              value={personName}
+              onChange={(e) => setPersonName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+
+          <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">المبلغ (ج.م) *</label>
             <Input
               type="number"
@@ -768,6 +943,66 @@ export const RegisterShell: React.FC = () => {
           </div>
         </div>
       </Dialog>
+
+      {/* EDIT SHIFT DIALOG */}
+      <Dialog isOpen={isEditShiftModalOpen} onClose={() => setIsEditShiftModalOpen(false)} title="تعديل الوردية والخزنة" maxWidth="md">
+        <form onSubmit={handleUpdateShift} className="space-y-4 font-sans" dir="rtl">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">تاريخ ووقت فتح الوردية (تعديل التاريخ والوقت)</label>
+            <Input
+              type="datetime-local"
+              value={editShiftFormData.opened_at}
+              onChange={(e) => setEditShiftFormData({ ...editShiftFormData, opened_at: e.target.value })}
+              className="bg-slate-950 border-slate-800 font-mono text-xs"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">رصيد الافتتاح (ج.م)</label>
+            <Input
+              type="number"
+              step="0.5"
+              min="0"
+              value={editShiftFormData.opening_balance}
+              onChange={(e) => setEditShiftFormData({ ...editShiftFormData, opening_balance: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">ملاحظات الوردية / اسم المسحب أو المودع</label>
+            <textarea
+              rows={2}
+              placeholder="ملاحظات..."
+              value={editShiftFormData.notes}
+              onChange={(e) => setEditShiftFormData({ ...editShiftFormData, notes: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button variant="secondary" type="button" onClick={() => setIsEditShiftModalOpen(false)}>
+              إلغاء
+            </Button>
+            <Button type="submit" isLoading={isSubmittingEditShift} variant="primary" className="bg-indigo-600 hover:bg-indigo-500">
+              حفظ التعديلات
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* CONFIRM DELETE SHIFT DIALOG */}
+      <ConfirmDialog
+        isOpen={!!shiftToDelete}
+        onClose={() => setShiftToDelete(null)}
+        onConfirm={handleConfirmDeleteShift}
+        title="تأكيد مسح سجل الوردية"
+        message="هل أنت تأكد من مسح سجل الوردية نهائياً من الخزنة؟ سيتم حذف بيانات جرد هذه الوردية من النظام."
+        confirmText="حذف الوردية"
+        cancelText="إلغاء"
+        isLoading={isDeletingShift}
+        variant="danger"
+      />
     </div>
   );
 };

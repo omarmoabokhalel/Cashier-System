@@ -28,6 +28,26 @@ interface AuthStore {
   simulateRole: (roleCode: UserRoleCode) => void;
 }
 
+export const DEFAULT_CASHIER_PERMISSIONS: PermissionCode[] = [
+  'view_dashboard',
+  'create_sale',
+  'create_return',
+  'create_exchange',
+  'view_products',
+  'manage_customers',
+];
+
+export const getSavedCashierPermissions = (): PermissionCode[] => {
+  try {
+    const cached = localStorage.getItem('custom_cashier_permissions');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return DEFAULT_CASHIER_PERMISSIONS;
+};
+
 export const useAuthStore = create<AuthStore>((set, get) => ({
   user: null,
   session: null,
@@ -176,7 +196,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         roleNameAr: 'كاشير مبيعات',
         branchId: '00000000-0000-0000-0000-000000000001',
         branchNameAr: 'الفرع الرئيسي',
-        permissions: ['view_dashboard', 'create_sale', 'create_return', 'create_exchange', 'view_products', 'manage_customers'],
+        permissions: getSavedCashierPermissions(),
         isActive: true,
       };
       set({ user: cashierUser, session: { user: { id: cashierUser.id } }, loading: false });
@@ -220,7 +240,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
             'view_cost_prices', 'view_profit', 'manage_customers', 'manage_suppliers', 'manage_purchases',
             'manage_expenses', 'manage_cash_register', 'view_reports', 'export_reports', 'manage_users',
             'manage_roles', 'manage_settings'
-          ] : ['view_dashboard', 'create_sale', 'create_return', 'create_exchange', 'view_products', 'manage_customers'],
+          ] : getSavedCashierPermissions(),
           isActive: true,
         };
         const savedAdminName = localStorage.getItem('admin_display_name');
@@ -332,7 +352,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       },
       cashier: {
         nameAr: 'كاشير (Cashier)',
-        perms: ['view_dashboard', 'create_sale', 'create_return', 'create_exchange', 'view_products', 'manage_customers']
+        perms: getSavedCashierPermissions()
       }
     };
 

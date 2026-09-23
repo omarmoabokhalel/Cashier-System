@@ -17,7 +17,12 @@ import {
   DollarSign,
   PackageCheck,
   FileText,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+
+import { useAuthStore } from '../../store/useAuthStore';
 
 interface PurchaseOrder {
   id: string;
@@ -29,10 +34,12 @@ interface PurchaseOrder {
   paid_amount: number;
   created_at: string;
   purchase_items?: any[];
+  notes?: string | null;
 }
 
 export const PurchasesShell: React.FC = () => {
   const { showToast } = useToast();
+  const { user } = useAuthStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [purchases, setPurchases] = useState<PurchaseOrder[]>([]);
@@ -44,8 +51,29 @@ export const PurchasesShell: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
+  const [handlerName, setHandlerName] = useState('');
   const [poItems, setPoItems] = useState<Array<{ variantId: string; qty: number; unitCost: number }>>([]);
   const [isCreating, setIsCreating] = useState(false);
+
+  // Edit PO Modal State
+  const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editFormData, setEditFormData] = useState({
+    supplierId: '',
+    handlerName: '',
+    totalAmount: '',
+    createdAt: '',
+  });
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+
+  // Delete PO State
+  const [poToDelete, setPoToDelete] = useState<PurchaseOrder | null>(null);
+  const [isDeletingPo, setIsDeletingPo] = useState(false);
+
+  useEffect(() => {
+    const defaultName = user?.fullName || localStorage.getItem('admin_display_name') || '';
+    setHandlerName(defaultName);
+  }, [user]);
 
   // Receive Shipment Modal State
   const [receivingPo, setReceivingPo] = useState<PurchaseOrder | null>(null);
@@ -115,6 +143,10 @@ export const PurchasesShell: React.FC = () => {
 
   const handleCreatePo = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!handlerName.trim()) {
+      showToast('warning', 'اسم المستلم مطلوب', 'يرجى إدخال اسم الشخص المسؤول عن الشراء (إجباري)');
+      return;
+    }
     if (!selectedSupplierId || poItems.length === 0) {
       showToast('warning', 'بيانات ناقصة', 'يرجى اختيار المورد وإضافة صنف واحد على الأقل');
       return;
@@ -134,6 +166,7 @@ export const PurchasesShell: React.FC = () => {
           status: 'ordered',
           total_amount: totalAmt,
           paid_amount: totalAmt,
+          notes: `مسؤول الشراء: ${handlerName.trim()}`,
         })
         .select()
         .single();
@@ -205,6 +238,89 @@ export const PurchasesShell: React.FC = () => {
     }
   };
 
+  const handleOpenEditPo = (po: PurchaseOrder) => {
+    setEditingPo(po);
+    const d = new Date(po.created_at);
+    const tzOffset = d.getTimezoneOffset() * 60000;
+    const localISO = new Date(d.getTime() - tzOffset).toISOString().slice(0, 16);
+
+    let extractedHandler = '';
+    if (po.notes && po.notes.includes('مسؤول الشراء:')) {
+      extractedHandler = po.notes.replace('مسؤول الشراء:', '').trim();
+    } else {
+      extractedHandler = user?.fullName || localStorage.getItem('admin_display_name') || '';
+    }
+
+    setEditFormData({
+      supplierId: po.supplier_id || '',
+      handlerName: extractedHandler,
+      totalAmount: String(po.total_amount || 0),
+      createdAt: localISO,
+    });
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdatePo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPo) return;
+    if (!editFormData.handlerName.trim()) {
+      showToast('warning', 'اسم المستلم مطلوب', 'يرجى إدخال اسم المسؤول عن الشراء (إجباري)');
+      return;
+    }
+
+    setIsSubmittingEdit(true);
+    try {
+      const updatedDate = editFormData.createdAt
+        ? new Date(editFormData.createdAt).toISOString()
+        : editingPo.created_at;
+      const totalAmt = parseFloat(editFormData.totalAmount) || editingPo.total_amount;
+
+      const { error } = await (supabase.from('purchases') as any)
+        .update({
+          supplier_id: editFormData.supplierId || editingPo.supplier_id,
+          total_amount: totalAmt,
+          paid_amount: totalAmt,
+          created_at: updatedDate,
+          notes: `مسؤول الشراء: ${editFormData.handlerName.trim()}`,
+        })
+        .eq('id', editingPo.id);
+
+      if (error) {
+        showToast('error', 'فشل تعديل أمر الشراء', error.message);
+      } else {
+        showToast('success', 'تم تعديل أمر الشراء بنجاح!');
+        setIsEditModalOpen(false);
+        setEditingPo(null);
+        fetchInitialData();
+      }
+    } catch (e: any) {
+      showToast('error', 'خطأ أثناء التعديل', e.message);
+    } finally {
+      setIsSubmittingEdit(false);
+    }
+  };
+
+  const handleConfirmDeletePo = async () => {
+    if (!poToDelete) return;
+    setIsDeletingPo(true);
+    try {
+      await (supabase.from('purchase_items') as any).delete().eq('purchase_id', poToDelete.id);
+      const { error } = await (supabase.from('purchases') as any).delete().eq('id', poToDelete.id);
+
+      if (error) {
+        showToast('error', 'فشل مسح أمر الشراء', error.message);
+      } else {
+        showToast('success', 'تم مسح أمر الشراء بنجاح');
+        setPoToDelete(null);
+        fetchInitialData();
+      }
+    } catch (e: any) {
+      showToast('error', 'خطأ أثناء المسح', e.message);
+    } finally {
+      setIsDeletingPo(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6 font-sans" dir="rtl">
       {/* HEADER */}
@@ -259,21 +375,43 @@ export const PurchasesShell: React.FC = () => {
                   </span>
                 </div>
 
-                {po.status !== 'received' ? (
+                <div className="flex items-center gap-2">
+                  {po.status !== 'received' ? (
+                    <Button
+                      onClick={() => openReceiveModal(po)}
+                      variant="primary"
+                      size="sm"
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold gap-1.5"
+                    >
+                      <PackageCheck className="w-4 h-4" />
+                      <span>استلام الشحنة</span>
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-emerald-400 font-bold flex items-center gap-1 bg-emerald-950/60 px-3 py-1.5 rounded-xl border border-emerald-800/40">
+                      <CheckCircle2 className="w-4 h-4" /> تم الإضافة للمخزون
+                    </span>
+                  )}
+
                   <Button
-                    onClick={() => openReceiveModal(po)}
-                    variant="primary"
+                    onClick={() => handleOpenEditPo(po)}
                     size="sm"
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold gap-1.5"
+                    variant="secondary"
+                    className="bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 gap-1 text-[11px] px-2.5 py-1.5"
                   >
-                    <PackageCheck className="w-4 h-4" />
-                    <span>استلام الشحنة</span>
+                    <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>تعديل</span>
                   </Button>
-                ) : (
-                  <span className="text-xs text-emerald-400 font-bold flex items-center gap-1 bg-emerald-950/60 px-3 py-1.5 rounded-xl border border-emerald-800/40">
-                    <CheckCircle2 className="w-4 h-4" /> تم الإضافة للمخزون
-                  </span>
-                )}
+
+                  <Button
+                    onClick={() => setPoToDelete(po)}
+                    size="sm"
+                    variant="secondary"
+                    className="bg-rose-950/80 hover:bg-rose-900 border border-rose-800/60 text-rose-200 gap-1 text-[11px] px-2.5 py-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>حذف</span>
+                  </Button>
+                </div>
               </div>
             </Card>
           ))
@@ -283,6 +421,18 @@ export const PurchasesShell: React.FC = () => {
       {/* CREATE PO DIALOG */}
       <Dialog isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="إنشاء أمر شراء جديد" maxWidth="md">
         <form onSubmit={handleCreatePo} className="space-y-4 font-sans" dir="rtl">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">اسم الشخص المسؤول / المستلم للشحنة * (إجباري)</label>
+            <Input
+              type="text"
+              placeholder="أدخل اسم الشخص المستلم..."
+              value={handlerName}
+              onChange={(e) => setHandlerName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">اختر المورد *</label>
             <select
@@ -450,6 +600,79 @@ export const PurchasesShell: React.FC = () => {
             console.error(e);
           }
         }}
+      />
+
+      {/* EDIT PO DIALOG */}
+      <Dialog isOpen={isEditModalOpen} onClose={() => setIsEditModalOpen(false)} title="تعديل أمر الشراء" maxWidth="md">
+        <form onSubmit={handleUpdatePo} className="space-y-4 font-sans" dir="rtl">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">تاريخ ووقت إصدرا أمر الشراء (تعديل التاريخ)</label>
+            <Input
+              type="datetime-local"
+              value={editFormData.createdAt}
+              onChange={(e) => setEditFormData({ ...editFormData, createdAt: e.target.value })}
+              className="bg-slate-950 border-slate-800 font-mono text-xs"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">اسم الشخص المسؤول / المستلم * (إجباري)</label>
+            <Input
+              type="text"
+              placeholder="اسم المسؤول..."
+              value={editFormData.handlerName}
+              onChange={(e) => setEditFormData({ ...editFormData, handlerName: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">المورد</label>
+            <select
+              value={editFormData.supplierId}
+              onChange={(e) => setEditFormData({ ...editFormData, supplierId: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-bold focus:outline-none focus:border-indigo-500"
+            >
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name_ar}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">إجمالي أمر الشراء (ج.م)</label>
+            <Input
+              type="number"
+              step="0.5"
+              min="0"
+              value={editFormData.totalAmount}
+              onChange={(e) => setEditFormData({ ...editFormData, totalAmount: e.target.value })}
+              required
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button variant="secondary" type="button" onClick={() => setIsEditModalOpen(false)}>
+              إلغاء
+            </Button>
+            <Button type="submit" isLoading={isSubmittingEdit} variant="primary" className="bg-indigo-600 hover:bg-indigo-500">
+              حفظ التعديلات
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* CONFIRM DELETE PO DIALOG */}
+      <ConfirmDialog
+        isOpen={!!poToDelete}
+        onClose={() => setPoToDelete(null)}
+        onConfirm={handleConfirmDeletePo}
+        title="تأكيد مسح أمر الشراء"
+        message={`هل أنت تأكد من مسح أمر الشراء رقم (#${poToDelete?.purchase_number}) بقيمة ${Number(poToDelete?.total_amount).toFixed(2)} ج.م؟`}
+        confirmText="حذف أمر الشراء"
+        cancelText="إلغاء"
+        isLoading={isDeletingPo}
+        variant="danger"
       />
     </div>
   );

@@ -24,7 +24,8 @@ import {
   Search,
   Lock,
 } from 'lucide-react';
-import { UserRoleCode } from '../../types/auth';
+import { useAuthStore, getSavedCashierPermissions, DEFAULT_CASHIER_PERMISSIONS } from '../../store/useAuthStore';
+import { PermissionCode, UserRoleCode } from '../../types/auth';
 
 interface UserProfileRecord {
   id: string;
@@ -40,8 +41,45 @@ interface UserProfileRecord {
   branches?: { id: string; name_ar: string };
 }
 
+const ALL_SYSTEM_PERMISSIONS: { key: PermissionCode; label: string; desc: string; category: string }[] = [
+  // Sales & POS
+  { key: 'create_sale', label: 'إجراء فواتير مبيعات بالكاشير (POS)', desc: 'إنشاء وفلترة فواتير البيع واحتساب الخصومات', category: 'المبيعات والـ POS' },
+  { key: 'create_return', label: 'إجراء مرتجعات المبيعات', desc: 'استرجاع الأصناف وإرجاع المبالغ للعميل', category: 'المبيعات والـ POS' },
+  { key: 'create_exchange', label: 'إجراء استبدال المنتجات', desc: 'تبديل أصناف الفواتير واستكمال الفرق', category: 'المبيعات والـ POS' },
+  { key: 'edit_sale', label: 'تعديل الفواتير المطبوعة', desc: 'القدرة على تعديل الفواتير الصادرة مسبقاً', category: 'المبيعات والـ POS' },
+  { key: 'cancel_sale', label: 'إلغاء وحذف الفواتير', desc: 'إلغاء أمر شراء أو إرجاع عهدة الفاتورة بالكامل', category: 'المبيعات والـ POS' },
+
+  // Products & Inventory
+  { key: 'view_products', label: 'استعراض قائمة المنتجات والأصناف', desc: 'رؤية كتالوج الملابس والألوان والمقاسات', category: 'المنتجات والمخزون' },
+  { key: 'create_product', label: 'إضافة منتجات وأصناف جديدة', desc: 'إنشاء كروت منتجات جديدة وتوليد الباركود', category: 'المنتجات والمخزون' },
+  { key: 'edit_product', label: 'تعديل بيانات المنتجات والأسعار', desc: 'تعديل مسميات وأسعار وتصنيفات المنتجات', category: 'المنتجات والمخزون' },
+  { key: 'delete_product', label: 'حذف المنتجات من الكتالوج', desc: 'إزالة الأصناف نهائياً من المخزون', category: 'المنتجات والمخزون' },
+  { key: 'manage_inventory', label: 'إدارة المخزون والتنبيهات', desc: 'متابعة أرصدة المخازن ونواقص البضاعة', category: 'المنتجات والمخزون' },
+  { key: 'adjust_stock', label: 'إجراء تسوية وتسوية الجرد (Stocktake)', desc: 'تعديل الأرصدة الحقيقية وإثبات العجز والزيادة', category: 'المنتجات والمخزون' },
+
+  // Financials & Privacy (Crucial Cost & Profit Guards)
+  { key: 'view_cost_prices', label: 'رؤية أسعار التكلفة والجملة (COGS)', desc: 'سعر تكلفة الشراء للجملة للأصناف والمنتجات', category: 'السرية والمالية' },
+  { key: 'view_profit', label: 'رؤية صافي الأرباح والتقارير المالية', desc: 'استعراض صافي أرباح الفواتير والورديات', category: 'السرية والمالية' },
+  { key: 'manage_purchases', label: 'إدارة المشتريات والشحنات الواردة', desc: 'إصدار أوامر الشراء واستلام بضائع الموردين', category: 'السرية والمالية' },
+  { key: 'manage_expenses', label: 'إدارة المصروفات التشغيلية', desc: 'تسجيل خصم النثريات والمصروفات اليومية', category: 'السرية والمالية' },
+  { key: 'manage_cash_register', label: 'إدارة الخزنة والورديات (Cash In/Out)', desc: 'السحب والإيداع النقدي وإغلاق وردية الكاشير', category: 'السرية والمالية' },
+
+  // Customers, Reports & Management
+  { key: 'view_dashboard', label: 'عرض لوحة التحكم الرئيسية', desc: 'متابعة ملخص مبيعات الوردية اليومية', category: 'الإدارة والتقارير' },
+  { key: 'manage_customers', label: 'إدارة بيانات العملاء والولاء', desc: 'إضافة عملاء واحتساب نقاط المكافآت', category: 'الإدارة والتقارير' },
+  { key: 'manage_suppliers', label: 'إدارة الموردين وكشوف الحساب', desc: 'إضافة الموردين ومتابعة الديون والمدفوعات', category: 'الإدارة والتقارير' },
+  { key: 'view_reports', label: 'عرض التقارير والتحليلات', desc: 'استعراض تقارير المبيعات والمخزون', category: 'الإدارة والتقارير' },
+  { key: 'export_reports', label: 'تصدير التقارير (Excel / PDF)', desc: 'تحميل ملفات كشوفات البيانات', category: 'الإدارة والتقارير' },
+  { key: 'manage_users', label: 'إدارة حسابات الموظفين والـ PIN', desc: 'إنشاء حسابات وتعيين الرموز السرية', category: 'الإدارة والتقارير' },
+  { key: 'manage_settings', label: 'إعدادات النظام وطباعة الفواتير', desc: 'تخصيص ترويسة الفاتورة ونسب الضريبة', category: 'الإدارة والتقارير' },
+];
+
 export const UsersShell: React.FC = () => {
   const { showToast } = useToast();
+  const { user } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<'users' | 'cashier_permissions'>('users');
+  const [cashierPermissions, setCashierPermissions] = useState<PermissionCode[]>(getSavedCashierPermissions());
+
   const [users, setUsers] = useState<UserProfileRecord[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
@@ -64,6 +102,18 @@ export const UsersShell: React.FC = () => {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [userToDelete, setUserToDelete] = useState<UserProfileRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const toggleCashierPermission = (permKey: PermissionCode) => {
+    setCashierPermissions((prev) =>
+      prev.includes(permKey) ? prev.filter((p) => p !== permKey) : [...prev, permKey]
+    );
+  };
+
+  const handleSaveCashierPermissions = () => {
+    localStorage.setItem('custom_cashier_permissions', JSON.stringify(cashierPermissions));
+    window.dispatchEvent(new Event('storage'));
+    showToast('success', 'تم حفظ وتحديث صلاحيات الكاشير بنجاح!');
+  };
 
   const fetchUsersData = async () => {
     setLoading(true);
@@ -238,36 +288,77 @@ export const UsersShell: React.FC = () => {
           <div>
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
               <Users className="w-6 h-6 text-indigo-400" />
-              <span>إدارة كشوفات المستخدمين والموظفين</span>
+              <span>إدارة كشوفات المستخدمين وصلاحيات الكاشير</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              إنشاء حسابات الكاشيرية والمدراء، تعيين صلاحيات الأدوار وتحديد رموز PIN الآمنة للدخول
+              إنشاء حسابات الكاشيرية والمدراء، التحكم الكامل في صلاحيات الكاشير وتحديد رموز PIN للدخول
             </p>
           </div>
 
-          <Button
-            onClick={handleOpenAddModal}
-            variant="primary"
-            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold gap-2 text-xs shadow-lg shadow-indigo-950/40"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>إضافة موظف / كاشير جديد</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            {activeTab === 'users' ? (
+              <Button
+                onClick={handleOpenAddModal}
+                variant="primary"
+                className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold gap-2 text-xs shadow-lg shadow-indigo-950/40"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>إضافة موظف / كاشير جديد</span>
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSaveCashierPermissions}
+                variant="primary"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold gap-2 text-xs shadow-lg shadow-emerald-950/40"
+              >
+                <Shield className="w-4 h-4" />
+                <span>حفظ وتطبيق صلاحيات الكاشير الحالية</span>
+              </Button>
+            )}
+          </div>
         </div>
 
-        {/* Filter & Search Bar */}
-        <Card className="p-4 bg-slate-900 border-slate-800">
-          <div className="relative max-w-md">
-            <Input
-              placeholder="ابحث باسم الموظف، البريد الإلكتروني، أو رمز PIN..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              icon={<Search className="w-4 h-4 text-slate-400" />}
-            />
-          </div>
-        </Card>
+        {/* Tab Navigation */}
+        <div className="flex border-b border-slate-800 gap-2">
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-all flex items-center gap-2 ${
+              activeTab === 'users'
+                ? 'border-indigo-500 text-indigo-400 bg-indigo-950/30'
+                : 'border-transparent text-slate-400 hover:text-white'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>كشوفات الموظفين والـ PIN ({users.length})</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('cashier_permissions')}
+            className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-all flex items-center gap-2 ${
+              activeTab === 'cashier_permissions'
+                ? 'border-emerald-500 text-emerald-400 bg-emerald-950/30'
+                : 'border-transparent text-slate-400 hover:text-white'
+            }`}
+          >
+            <Shield className="w-4 h-4 text-emerald-400" />
+            <span>تحكم المالك الصارم بصلاحيات الكاشير ({cashierPermissions.length} صلاحية مفعّلة)</span>
+          </button>
+        </div>
 
-        {/* Users Table */}
+        {activeTab === 'users' && (
+          <>
+            {/* Filter & Search Bar */}
+            <Card className="p-4 bg-slate-900 border-slate-800">
+              <div className="relative max-w-md">
+                <Input
+                  placeholder="ابحث باسم الموظف، البريد الإلكتروني، أو رمز PIN..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  icon={<Search className="w-4 h-4 text-slate-400" />}
+                />
+              </div>
+            </Card>
+
+            {/* Users Table */}
         <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
           <div className="overflow-x-auto">
             <table className="w-full text-right text-xs">
@@ -378,6 +469,99 @@ export const UsersShell: React.FC = () => {
             </table>
           </div>
         </Card>
+      </>
+    )}
+
+    {activeTab === 'cashier_permissions' && (
+      <div className="space-y-6">
+        <div className="p-4 bg-gradient-to-r from-emerald-950/60 via-slate-900 to-indigo-950/60 border border-emerald-500/30 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2">
+              <Shield className="w-5 h-5 text-emerald-400" />
+              <span>مصفوفة التحكم الصارم بصلاحيات الكاشير (Owner Permissions Control)</span>
+            </h3>
+            <p className="text-xs text-slate-300">
+              يمكنك كمالك للمتجر تمكين أو إلغاء أي صلاحية للكاشير. يتم تطبيق هذه الصلاحيات فوراً عند دخول أي كاشير للنظام.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              onClick={() => setCashierPermissions(DEFAULT_CASHIER_PERMISSIONS)}
+              variant="secondary"
+              size="sm"
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+            >
+              استعادة الصلاحيات الافتراضية
+            </Button>
+            <Button
+              onClick={handleSaveCashierPermissions}
+              variant="primary"
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-500 font-bold text-xs"
+            >
+              حفظ التعديلات
+            </Button>
+          </div>
+        </div>
+
+        {/* Group Permissions by Category */}
+        {Array.from(new Set(ALL_SYSTEM_PERMISSIONS.map((p) => p.category))).map((catName) => {
+          const categoryPerms = ALL_SYSTEM_PERMISSIONS.filter((p) => p.category === catName);
+
+          return (
+            <Card key={catName} className="p-5 bg-slate-900 border-slate-800 space-y-4">
+              <h4 className="text-sm font-bold text-white flex items-center gap-2 border-b border-slate-800 pb-2.5">
+                <Lock className="w-4 h-4 text-indigo-400" />
+                <span>صلاحيات: {catName}</span>
+              </h4>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {categoryPerms.map((perm) => {
+                  const isChecked = cashierPermissions.includes(perm.key);
+                  const isSensitive = perm.key === 'view_cost_prices' || perm.key === 'view_profit';
+
+                  return (
+                    <div
+                      key={perm.key}
+                      onClick={() => toggleCashierPermission(perm.key)}
+                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-start justify-between gap-3 ${
+                        isChecked
+                          ? 'bg-emerald-950/40 border-emerald-500/50 shadow-md shadow-emerald-950/20'
+                          : 'bg-slate-950 border-slate-800/80 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-bold text-xs ${isChecked ? 'text-emerald-300' : 'text-slate-300'}`}>
+                            {perm.label}
+                          </span>
+                          {isSensitive && (
+                            <span className="text-[10px] font-bold text-amber-400 bg-amber-950/80 px-2 py-0.5 rounded-md border border-amber-800/60">
+                              سرية تامة
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-snug">{perm.desc}</p>
+                      </div>
+
+                      <div className="pt-0.5 shrink-0">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => {}} // Handled by div click
+                          className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 bg-slate-900 border-slate-700 cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    )}
 
         {/* CREATE / EDIT STAFF USER MODAL */}
         <Dialog

@@ -5,6 +5,7 @@ import { Input } from '../ui/Input';
 import { Select } from '../ui/Select';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
+import { PermissionGuard } from '../auth/PermissionGuard';
 import { uploadProductImage, deleteProductImage } from '../../utils/storage';
 import { GeneratedVariant } from './VariantMatrixGenerator';
 import {
@@ -680,14 +681,16 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
                 onChange={(e) => setStockQty(e.target.value)}
                 required
               />
-              <Input
-                label="سعر الجملة / التكلفة (ج.م) *"
-                type="number"
-                step="0.01"
-                value={costPrice}
-                onChange={(e) => setCostPrice(e.target.value)}
-                required
-              />
+              <PermissionGuard permission="view_cost_prices">
+                <Input
+                  label="سعر الجملة / التكلفة (ج.م) *"
+                  type="number"
+                  step="0.01"
+                  value={costPrice}
+                  onChange={(e) => setCostPrice(e.target.value)}
+                  required
+                />
+              </PermissionGuard>
               <Input
                 label="سعر البيع (ج.م) *"
                 type="number"

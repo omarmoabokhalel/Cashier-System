@@ -22,7 +22,11 @@ import {
   RotateCcw,
   DollarSign,
   Layers,
+  Activity,
 } from 'lucide-react';
+
+import { useAuthStore } from '../../store/useAuthStore';
+import { PermissionGuard } from '../../components/auth/PermissionGuard';
 
 interface DashboardMetrics {
   sales_today: number;
@@ -50,16 +54,98 @@ interface OwnerMetrics {
   branch_performance: Array<{ branch_name: string; sales_count: number; total_sales: number }>;
 }
 
+interface CashierActivityItem {
+  id: string;
+  type: 'sale' | 'expense' | 'cash_in' | 'cash_out' | 'return';
+  title: string;
+  subtitle: string;
+  amount: number;
+  performer: string;
+  timestamp: string;
+}
+
 export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [isOwnerView, setIsOwnerView] = useState(false);
   const [activeShift, setActiveShift] = useState<any | null>(null);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [ownerMetrics, setOwnerMetrics] = useState<OwnerMetrics | null>(null);
+  const [recentActivities, setRecentActivities] = useState<CashierActivityItem[]>([]);
 
   useEffect(() => {
     loadDashboardData();
+    loadCashierActivities();
   }, []);
+
+  const loadCashierActivities = async () => {
+    try {
+      const [salesRes, expRes, returnsRes] = await Promise.all([
+        supabase
+          .from('sales')
+          .select('id, invoice_number, total_amount, created_at, notes, cashier:profiles!sales_cashier_id_fkey(full_name)')
+          .order('created_at', { ascending: false })
+          .limit(8),
+        supabase
+          .from('expenses')
+          .select('id, category, description, amount, payee, created_at')
+          .order('created_at', { ascending: false })
+          .limit(8),
+        supabase
+          .from('sales_returns')
+          .select('id, return_number, refund_amount, reason, created_at')
+          .order('created_at', { ascending: false })
+          .limit(8),
+      ]);
+
+      const items: CashierActivityItem[] = [];
+
+      (salesRes.data || []).forEach((s: any) => {
+        let performerName = s.cashier?.full_name;
+        if (!performerName) {
+          if (s.notes && s.notes.includes('role:owner')) performerName = 'المالك / المدير';
+          else performerName = 'أحمد الكاشير';
+        }
+        items.push({
+          id: `sale-${s.id}`,
+          type: 'sale',
+          title: `فاتورة مبيعات جديدة #${s.invoice_number}`,
+          subtitle: `تفاصيل: ${s.notes || 'إصدار كاشير POS'}`,
+          amount: Number(s.total_amount || 0),
+          performer: performerName,
+          timestamp: s.created_at,
+        });
+      });
+
+      (expRes.data || []).forEach((e: any) => {
+        items.push({
+          id: `exp-${e.id}`,
+          type: 'expense',
+          title: `مصروف تشغيلي: ${e.description || e.category}`,
+          subtitle: `تصنيف: ${e.category}`,
+          amount: Number(e.amount || 0),
+          performer: e.payee || 'الكاشير',
+          timestamp: e.created_at,
+        });
+      });
+
+      (returnsRes.data || []).forEach((r: any) => {
+        items.push({
+          id: `ret-${r.id}`,
+          type: 'return',
+          title: `مرتجع مبيعات #${r.return_number}`,
+          subtitle: `سبب الإرجاع: ${r.reason || 'طلب العميل'}`,
+          amount: Number(r.refund_amount || 0),
+          performer: 'الكاشير',
+          timestamp: r.created_at,
+        });
+      });
+
+      items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setRecentActivities(items.slice(0, 10));
+    } catch (err) {
+      console.error('Error fetching cashier activities:', err);
+    }
+  };
 
   const loadDashboardData = async () => {
     setLoading(true);
@@ -98,7 +184,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           `)
           .eq('cashier_shift_id', currentShift.id);
 
-        const salesList = shiftSales || [];
+        const salesList: any[] = shiftSales || [];
         const totalSalesAmt = salesList.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
         const invoicesCount = salesList.length;
         const avgInv = invoicesCount > 0 ? totalSalesAmt / invoicesCount : 0;
@@ -197,17 +283,19 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setIsOwnerView(!isOwnerView)}
-            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 border ${
-              isOwnerView
-                ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-500/20'
-                : 'bg-slate-900 text-amber-400 border-amber-500/40 hover:bg-slate-800'
-            }`}
-          >
-            <Crown className="w-4 h-4" />
-            <span>{isOwnerView ? 'منظور المالك (نشط)' : 'منظور المالك (Executive Owner)'}</span>
-          </button>
+          <PermissionGuard role="owner">
+            <button
+              onClick={() => setIsOwnerView(!isOwnerView)}
+              className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 border ${
+                isOwnerView
+                  ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-500/20'
+                  : 'bg-slate-900 text-amber-400 border-amber-500/40 hover:bg-slate-800'
+              }`}
+            >
+              <Crown className="w-4 h-4" />
+              <span>{isOwnerView ? 'منظور المالك (نشط)' : 'منظور المالك (Executive Owner)'}</span>
+            </button>
+          </PermissionGuard>
 
           <Button
             onClick={() => onNavigate('pos')}
@@ -263,25 +351,29 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
             </span>
           </Card>
 
-          <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
-            <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>تكلفة البضاعة (COGS)</span>
-              <Layers className="w-4 h-4 text-amber-400" />
-            </span>
-            <span className="text-lg font-black text-amber-400 font-mono">
-              {Number(metrics.cogs).toFixed(2)} <span className="text-[10px] text-slate-400 font-sans">ج.م</span>
-            </span>
-          </Card>
+          <PermissionGuard permission="view_cost_prices">
+            <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
+              <span className="text-[11px] text-slate-400 block flex items-center justify-between">
+                <span>تكلفة البضاعة (COGS)</span>
+                <Layers className="w-4 h-4 text-amber-400" />
+              </span>
+              <span className="text-lg font-black text-amber-400 font-mono">
+                {Number(metrics.cogs).toFixed(2)} <span className="text-[10px] text-slate-400 font-sans">ج.م</span>
+              </span>
+            </Card>
+          </PermissionGuard>
 
-          <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
-            <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>أرباح الوردية</span>
-              <Sparkles className="w-4 h-4 text-emerald-400" />
-            </span>
-            <span className="text-lg font-black text-emerald-400 font-mono">
-              {Number(metrics.gross_profit).toFixed(2)} <span className="text-[10px] text-slate-400 font-sans">ج.م</span>
-            </span>
-          </Card>
+          <PermissionGuard permission="view_profit">
+            <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
+              <span className="text-[11px] text-slate-400 block flex items-center justify-between">
+                <span>أرباح الوردية</span>
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+              </span>
+              <span className="text-lg font-black text-emerald-400 font-mono">
+                {Number(metrics.gross_profit).toFixed(2)} <span className="text-[10px] text-slate-400 font-sans">ج.م</span>
+              </span>
+            </Card>
+          </PermissionGuard>
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
@@ -313,15 +405,17 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
             </span>
           </Card>
 
-          <Card className="p-4 bg-gradient-to-br from-emerald-950 to-slate-900 border-emerald-800/80 space-y-1 shadow-lg shadow-emerald-600/10">
-            <span className="text-[11px] text-emerald-300 font-bold block flex items-center justify-between">
-              <span>صافي ربح الوردية النهائي</span>
-              <Crown className="w-4 h-4 text-amber-400" />
-            </span>
-            <span className="text-lg font-black text-emerald-300 font-mono">
-              {Number(metrics.net_profit).toFixed(2)} <span className="text-[10px] text-slate-300 font-sans">ج.م</span>
-            </span>
-          </Card>
+          <PermissionGuard permission="view_profit">
+            <Card className="p-4 bg-gradient-to-br from-emerald-950 to-slate-900 border-emerald-800/80 space-y-1 shadow-lg shadow-emerald-600/10">
+              <span className="text-[11px] text-emerald-300 font-bold block flex items-center justify-between">
+                <span>صافي ربح الوردية النهائي</span>
+                <Crown className="w-4 h-4 text-amber-400" />
+              </span>
+              <span className="text-lg font-black text-emerald-300 font-mono">
+                {Number(metrics.net_profit).toFixed(2)} <span className="text-[10px] text-slate-300 font-sans">ج.م</span>
+              </span>
+            </Card>
+          </PermissionGuard>
         </div>
       ) : null}
 
@@ -447,6 +541,53 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           </Card>
         </div>
       )}
+
+      {/* LIVE CASHIER ACTIVITY FEED FOR OWNER */}
+      <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
+        <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Activity className="w-5 h-5 text-emerald-400" />
+            <h3 className="text-sm font-bold text-white">سجل العمليات والأنشطة اللحظية للكاشير (Live Cashier Audit Feed)</h3>
+          </div>
+          <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800/60 font-bold flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            <span>مراقبة لحظية من منظور المالك</span>
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto custom-scrollbar">
+          {recentActivities.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center col-span-2 py-6">لا توجد حركات كاشير مسجلة حالياً</p>
+          ) : (
+            recentActivities.map((act) => (
+              <div
+                key={act.id}
+                className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-xs hover:border-slate-700 transition-colors"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${
+                      act.type === 'sale' ? 'bg-emerald-400' : act.type === 'expense' ? 'bg-rose-400' : 'bg-amber-400'
+                    }`} />
+                    <span className="font-bold text-slate-100">{act.title}</span>
+                  </div>
+                  <span className="text-[11px] text-slate-400 block">{act.subtitle}</span>
+                  <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
+                    <span>المنفذ: <strong className="text-indigo-300">{act.performer}</strong></span>
+                    <span>الوقت: {new Date(act.timestamp).toLocaleTimeString('ar-EG')}</span>
+                  </div>
+                </div>
+
+                <div className="text-left font-mono font-bold text-sm">
+                  <span className={act.type === 'sale' ? 'text-emerald-400' : act.type === 'expense' ? 'text-rose-400' : 'text-amber-400'}>
+                    {act.type === 'expense' ? '-' : '+'}{act.amount.toFixed(2)} ج.م
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
     </div>
   );
 };

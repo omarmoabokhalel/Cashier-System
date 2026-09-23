@@ -460,7 +460,7 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title={`تعديل الفاتورة #${sale?.invoice_number || ''}`}
-      maxWidth="max-w-4xl"
+      maxWidth="2xl"
     >
       <div className="space-y-5 text-right font-sans text-xs select-none" dir="rtl">
         {/* Top Header Card */}

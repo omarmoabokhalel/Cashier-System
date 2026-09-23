@@ -12,7 +12,7 @@ interface BarcodePrintModalProps {
   allProducts?: any[]; // Batch mode
 }
 
-type LabelFormat = '50x30' | '50x25' | 'a4';
+type LabelFormat = '48x35' | '50x30' | '40x30' | 'a4' | 'custom';
 
 // ==============================================================================
 // Official International Code 128 B Standard Encoder
@@ -71,24 +71,19 @@ const BarcodeSVG: React.FC<{ code: string }> = ({ code }) => {
   const totalWidth = bars.reduce((acc, b) => acc + b.width, 0);
 
   return (
-    <div className="flex flex-col items-center select-none w-full">
-      <svg
-        viewBox={`0 0 ${totalWidth} 45`}
-        className="w-full h-9"
-        preserveAspectRatio="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        {bars.map((bar, idx) => {
-          const currentX = bars.slice(0, idx).reduce((acc, b) => acc + b.width, 0);
-          return bar.isBar ? (
-            <rect key={idx} x={currentX} y="0" width={bar.width} height="45" fill="black" shapeRendering="crispEdges" />
-          ) : null;
-        })}
-      </svg>
-      <span className="text-[10px] font-mono tracking-wider font-bold text-black mt-0.5 leading-none">
-        {code || '628100000000'}
-      </span>
-    </div>
+    <svg
+      viewBox={`0 0 ${totalWidth} 45`}
+      className="w-full h-8"
+      preserveAspectRatio="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      {bars.map((bar, idx) => {
+        const currentX = bars.slice(0, idx).reduce((acc, b) => acc + b.width, 0);
+        return bar.isBar ? (
+          <rect key={idx} x={currentX} y="0" width={bar.width} height="45" fill="black" shapeRendering="crispEdges" />
+        ) : null;
+      })}
+    </svg>
   );
 };
 
@@ -104,7 +99,7 @@ function buildBarcodeSvgMarkup(code: string): string {
     }
     x += bar.width;
   }
-  return `<svg viewBox="0 0 ${totalWidth} 45" style="width:100%;height:34px;display:block" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
+  return `<svg viewBox="0 0 ${totalWidth} 45" style="width:100%;height:30px;display:block" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
 }
 
 function escapeHtml(value: any): string {
@@ -124,86 +119,121 @@ interface LabelItem {
   specLabel: string;
 }
 
-function buildLabelItems(targets: any[], product: any, copiesPerVariant: number, useStockQty: boolean): LabelItem[] {
+// كل صنف (variant) بييجي مرتبط بالمنتج الأب بتاعه، سواء في وضع منتج واحد
+// أو وضع الطباعة الجماعية (كذا منتج مع بعض) — ده اللي كان ناقص وبيسبب ظهور
+// "منتج" بدل الاسم الحقيقي في وضع الطباعة الجماعية
+function buildLabelItems(product: any, allProducts: any[], copiesPerVariant: number, useStockQty: boolean): LabelItem[] {
+  const pairs: Array<{ parent: any; variant: any }> = product
+    ? (product.product_variants || []).map((v: any) => ({ parent: product, variant: v }))
+    : allProducts.flatMap((p: any) => (p.product_variants || []).map((v: any) => ({ parent: p, variant: v })));
+
   const items: LabelItem[] = [];
-  targets.forEach((v: any, vIdx: number) => {
+
+  pairs.forEach(({ parent, variant: v }, vIdx: number) => {
     const count = useStockQty ? Math.max(1, v.branch_variant_stock?.[0]?.quantity || 1) : copiesPerVariant;
-    const prodName = product?.name_ar || v.products?.name_ar || 'منتج';
-    const price = Number(v.selling_price || product?.base_price || 0).toFixed(2);
+
+    // ترتيب أولوية أوسع لإيجاد اسم المنتج الحقيقي أياً كان شكل البيانات القادمة
+    const prodName =
+      v.products?.name_ar ||
+      v.product_name_ar ||
+      v.name_ar ||
+      parent?.name_ar ||
+      parent?.name ||
+      'منتج';
+
+    const price = Number(v.selling_price ?? v.price ?? parent?.base_price ?? parent?.price ?? 0).toFixed(2);
     const barcodeCode = v.barcode || v.sku || '628100000000';
     const sizeLabel = v.sizes?.code && !['N/A', 'Std'].includes(v.sizes.code) ? v.sizes.code : null;
     const colorLabel = v.colors?.name_ar && !['عام', 'بدون'].includes(v.colors.name_ar) ? v.colors.name_ar : null;
     const specLabel = [colorLabel, sizeLabel].filter(Boolean).join(' / ');
 
     for (let cIdx = 0; cIdx < count; cIdx++) {
-      items.push({ key: `${vIdx}-${cIdx}`, prodName, price, barcodeCode, sku: v.sku, specLabel });
+      items.push({ key: `${vIdx}-${cIdx}`, prodName, price, barcodeCode, sku: v.sku || '', specLabel });
     }
   });
+
   return items;
 }
 
-// ستيكر واحد للمعاينة على الشاشة فقط
-const StickerLabel: React.FC<{ item: LabelItem; labelFormat: LabelFormat }> = ({ item, labelFormat }) => (
+interface Dims {
+  widthMm: number;
+  heightMm: number;
+  gapMm: number; // المسافة بين ملصق وملصق (بيبقى صفر في وضع A4)
+  isA4: boolean;
+}
+
+function getDims(format: LabelFormat, custom: { width: number; height: number; gap: number }): Dims {
+  switch (format) {
+    case '48x35':
+      return { widthMm: 48, heightMm: 35, gapMm: 2, isA4: false };
+    case '50x30':
+      return { widthMm: 50, heightMm: 30, gapMm: 2, isA4: false };
+    case '40x30':
+      return { widthMm: 40, heightMm: 30, gapMm: 2, isA4: false };
+    case 'custom':
+      return { widthMm: custom.width, heightMm: custom.height, gapMm: custom.gap, isA4: false };
+    case 'a4':
+    default:
+      return { widthMm: 48, heightMm: 35, gapMm: 4, isA4: true };
+  }
+}
+
+// ستيكر واحد للمعاينة على الشاشة فقط — تصميم مبسّط ومتناسب مع مساحة صغيرة:
+// اسم المنتج فوق، الباركود في النص، السعر بارز تحت
+const StickerLabel: React.FC<{ item: LabelItem; dims: Dims }> = ({ item, dims }) => (
   <div
-    style={{ width: '50mm', height: labelFormat === '50x25' ? '25mm' : '30mm' }}
-    className="barcode-sticker border-2 border-black p-1 bg-white flex flex-col justify-between items-center text-center shadow-md rounded overflow-hidden select-none"
+    style={{ width: `${dims.widthMm}mm`, height: `${dims.heightMm}mm` }}
+    className="barcode-sticker border border-black p-1 bg-white flex flex-col justify-between items-stretch text-center overflow-hidden select-none"
   >
-    <div className="w-full flex items-center justify-between border-b border-black/40 pb-0.5 text-[8px] font-black text-black leading-none">
-      <span className="truncate max-w-[30mm]">Poker</span>
-      {/* {item.specLabel ? (
-        <span className="bg-black text-white px-1 py-0.2 rounded text-[7px] font-bold truncate">{item.specLabel}</span>
-      ) : (
-        <span className="text-[7px]">قياسي</span>
-      )} */}
+    <div className="flex items-center justify-between text-[7px] font-bold text-black leading-none">
+      <span className="truncate max-w-[60%]">{item.prodName}</span>
+      <span className="truncate max-w-[35%]">{item.specLabel || ''}</span>
     </div>
-    <h5 className="text-[10px] font-black text-black leading-tight truncate w-full px-0.5 my-0.5">{item.prodName}</h5>
+
     <BarcodeSVG code={item.barcodeCode} />
-    <div className="w-full flex items-center justify-between border-t border-black/40 pt-0.5 text-[9px] font-black text-black leading-none">
-      <span className="font-mono text-[7.5px] truncate max-w-[25mm]">SKU: {item.sku}</span>
-      <span className="font-mono font-bold bg-black text-white px-1 py-0.2 rounded text-[8.5px]">{item.price} ج.م</span>
+    <span className="text-[8px] font-mono tracking-wider font-bold text-black leading-none -mt-0.5">
+      {item.barcodeCode}
+    </span>
+
+    <div className="flex items-center justify-between border-t border-black pt-0.5 mt-0.5">
+      <span className="font-mono text-[7px] text-black truncate max-w-[45%]">SKU:{item.sku}</span>
+      <span className="font-mono font-black text-black text-[12px] leading-none">{item.price} ج.م</span>
     </div>
   </div>
 );
 
-// بناء ستيكر واحد كـ HTML خام لمستند الطباعة
-function buildStickerHtml(item: LabelItem, labelFormat: LabelFormat): string {
+// نفس الستيكر كـ HTML خام لمستند الطباعة
+function buildStickerHtml(item: LabelItem, dims: Dims): string {
   return `
     <div class="sticker">
-      <div class="row header">
-        <span class="store-name">متجر الملابس</span>
-        ${
-          item.specLabel
-            ? `<span class="spec-badge">${escapeHtml(item.specLabel)}</span>`
-            : `<span class="spec-generic">قياسي</span>`
-        }
+      <div class="row top">
+        <span class="prod-name">${escapeHtml(item.prodName)}</span>
+        ${item.specLabel ? `<span class="spec">${escapeHtml(item.specLabel)}</span>` : ''}
       </div>
-      <h5 class="prod-name">${escapeHtml(item.prodName)}</h5>
-      <div class="barcode-wrap">
-        ${buildBarcodeSvgMarkup(item.barcodeCode)}
-        <span class="barcode-text">${escapeHtml(item.barcodeCode)}</span>
-      </div>
-      <div class="row footer">
-        <span class="sku">SKU: ${escapeHtml(item.sku)}</span>
+      ${buildBarcodeSvgMarkup(item.barcodeCode)}
+      <span class="barcode-text">${escapeHtml(item.barcodeCode)}</span>
+      <div class="row bottom">
+        <span class="sku">SKU:${escapeHtml(item.sku)}</span>
         <span class="price">${escapeHtml(item.price)} ج.م</span>
       </div>
     </div>`;
 }
 
-// بناء مستند HTML كامل ومستقل تماماً عن CSS التطبيق، عشان نضمن إنه يطبع
-// صح 100% من غير أي تعارض مع استايلات الصفحة الأصلية
-function buildPrintDocument(items: LabelItem[], labelFormat: LabelFormat): string {
-  const heightMm = labelFormat === '50x25' ? 25 : 30;
-  const pageSize = labelFormat === '50x25' ? '50mm 25mm' : labelFormat === '50x30' ? '50mm 30mm' : 'A4';
-  const sheetCss =
-    labelFormat === 'a4'
-      ? `display:grid;grid-template-columns:repeat(3,1fr);gap:4mm;padding:10mm;`
-      : `display:flex;flex-direction:column;align-items:center;`;
-  const stickerPageBreak =
-    labelFormat === 'a4'
-      ? ''
-      : `.sticker{page-break-after:always;break-after:page;} .sticker:last-child{page-break-after:auto;break-after:auto;}`;
+// بناء مستند HTML كامل ومستقل تماماً عن CSS التطبيق، بمقاس الملصق الحقيقي
+// المُدخل، مع مراعاة المسافة الفاصلة بين الملصقات في اللفة المستمرة
+function buildPrintDocument(items: LabelItem[], dims: Dims): string {
+  const pitchMm = dims.heightMm + dims.gapMm; // المساحة الكلية لكل ملصق شاملة الفجوة
+  const pageSize = dims.isA4 ? 'A4' : `${dims.widthMm}mm ${pitchMm}mm`;
 
-  const stickersHtml = items.map((item) => buildStickerHtml(item, labelFormat)).join('\n');
+  const sheetCss = dims.isA4
+    ? `display:grid;grid-template-columns:repeat(auto-fill,minmax(${dims.widthMm}mm,1fr));gap:${dims.gapMm}mm;padding:8mm;`
+    : `display:flex;flex-direction:column;align-items:center;`;
+
+  const stickerPageBreak = dims.isA4
+    ? ''
+    : `.sticker{page-break-after:always;break-after:page;} .sticker:last-child{page-break-after:auto;break-after:auto;}`;
+
+  const stickersHtml = items.map((item) => buildStickerHtml(item, dims)).join('\n');
 
   return `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -213,35 +243,34 @@ function buildPrintDocument(items: LabelItem[], labelFormat: LabelFormat): strin
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #ffffff; }
-  body { font-family: 'Courier New', Courier, monospace, Cairo, sans-serif; color: #000000; }
+  body { font-family: 'Cairo', 'Courier New', Courier, monospace, sans-serif; color: #000000; }
   .sheet { ${sheetCss} }
   .sticker {
-    width: 50mm;
-    height: ${heightMm}mm;
+    width: ${dims.widthMm}mm;
+    height: ${dims.heightMm}mm;
+    ${dims.isA4 ? '' : `margin-bottom: ${dims.gapMm}mm;`}
     border: 1px solid #000;
-    padding: 1mm;
+    padding: 1mm 1.5mm;
     background: #ffffff;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    align-items: center;
+    align-items: stretch;
     text-align: center;
     overflow: hidden;
     break-inside: avoid;
     page-break-inside: avoid;
   }
+  .sticker:last-child { margin-bottom: 0; }
   ${stickerPageBreak}
   .row { width: 100%; display: flex; justify-content: space-between; align-items: center; line-height: 1; }
-  .header { font-size: 8px; font-weight: 900; border-bottom: 1px solid rgba(0,0,0,.4); padding-bottom: 1px; margin-bottom: 1px; }
-  .footer { font-size: 9px; font-weight: 900; border-top: 1px solid rgba(0,0,0,.4); padding-top: 1px; margin-top: 1px; }
-  .store-name { max-width: 30mm; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .spec-badge { background: #000; color: #fff; padding: 0 3px; border-radius: 2px; font-size: 7px; font-weight: 700; }
-  .spec-generic { font-size: 7px; }
-  .prod-name { font-size: 10px; font-weight: 900; margin: 1px 0; width: 100%; padding: 0 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .barcode-wrap { display: flex; flex-direction: column; align-items: center; width: 100%; }
-  .barcode-text { font-size: 9px; font-family: monospace; font-weight: 700; letter-spacing: 1px; margin-top: 1px; }
-  .sku { font-family: monospace; font-size: 7.5px; max-width: 25mm; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .price { font-family: monospace; font-weight: 700; background: #000; color: #fff; padding: 0 3px; border-radius: 2px; font-size: 8.5px; }
+  .top { font-size: 7px; font-weight: 700; }
+  .prod-name { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .spec { max-width: 35%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .barcode-text { font-size: 8px; font-family: monospace; font-weight: 700; letter-spacing: 1.5px; margin-top: -1px; }
+  .bottom { border-top: 1px solid #000; padding-top: 1px; margin-top: 1px; }
+  .sku { font-family: monospace; font-size: 7px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .price { font-family: monospace; font-weight: 900; font-size: 13px; }
   @page { size: ${pageSize}; margin: 0; }
 </style>
 </head>
@@ -289,27 +318,16 @@ function printViaIframe(html: string) {
       iframe.remove();
     };
   }
-  // بعض المتصفحات محتاجة وقت بسيط عشان الـ SVG والخطوط تترسم قبل الطباعة
   setTimeout(triggerPrint, 250);
-
-  // تنضيف احتياطي لو حدث afterprint متطلعش
   setTimeout(() => {
-    if (document.getElementById('barcode-print-iframe')) {
-      iframe.remove();
-    }
+    if (document.getElementById('barcode-print-iframe')) iframe.remove();
   }, 60000);
 }
 
-const LabelsGrid: React.FC<{ items: LabelItem[]; labelFormat: LabelFormat }> = ({ items, labelFormat }) => (
-  <div
-    className={
-      labelFormat === 'a4'
-        ? 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3'
-        : 'flex flex-wrap gap-3 justify-center'
-    }
-  >
+const LabelsGrid: React.FC<{ items: LabelItem[]; dims: Dims }> = ({ items, dims }) => (
+  <div className="flex flex-wrap gap-3 justify-center">
     {items.map((item) => (
-      <StickerLabel key={item.key} item={item} labelFormat={labelFormat} />
+      <StickerLabel key={item.key} item={item} dims={dims} />
     ))}
   </div>
 );
@@ -317,14 +335,17 @@ const LabelsGrid: React.FC<{ items: LabelItem[]; labelFormat: LabelFormat }> = (
 export const BarcodePrintModal: React.FC<BarcodePrintModalProps> = ({ isOpen, onClose, product, allProducts = [] }) => {
   const [copiesPerVariant, setCopiesPerVariant] = useState<number>(1);
   const [useStockQty, setUseStockQty] = useState<boolean>(false);
-  const [labelFormat, setLabelFormat] = useState<LabelFormat>('50x30');
+  const [labelFormat, setLabelFormat] = useState<LabelFormat>('48x35');
+  const [customWidth, setCustomWidth] = useState<number>(48);
+  const [customHeight, setCustomHeight] = useState<number>(35);
+  const [customGap, setCustomGap] = useState<number>(2);
 
-  const targets = product ? product.product_variants || [] : allProducts.flatMap((p) => p.product_variants || []);
-  const items = buildLabelItems(targets, product, copiesPerVariant, useStockQty);
+  const dims = getDims(labelFormat, { width: customWidth, height: customHeight, gap: customGap });
+  const items = buildLabelItems(product, allProducts, copiesPerVariant, useStockQty);
 
   const handlePrint = () => {
     if (items.length === 0) return;
-    const html = buildPrintDocument(items, labelFormat);
+    const html = buildPrintDocument(items, dims);
     printViaIframe(html);
   };
 
@@ -332,13 +353,15 @@ export const BarcodePrintModal: React.FC<BarcodePrintModalProps> = ({ isOpen, on
     <Dialog isOpen={isOpen} onClose={onClose} title="طباعة ملصقات الباركود (Barcode Thermal Labels)" maxWidth="lg">
       <div className="space-y-4 font-sans" dir="rtl">
         {/* Controls Toolbar */}
-        <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-3 items-center text-xs">
+        <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end text-xs">
           <div>
             <label className="block text-slate-400 font-semibold mb-1">مقاس ملصق الباركود (الاستيكر):</label>
             <Select
               options={[
-                { value: '50x30', label: '5سم × 3سم (50mm × 30mm) - استيكر عريض' },
-                { value: '50x25', label: '5سم × 2.5سم (50mm × 25mm) - استيكر رفيع' },
+                { value: '48x35', label: '4.8سم × 3.5سم (48mm × 35mm)' },
+                { value: '50x30', label: '5سم × 3سم (50mm × 30mm)' },
+                { value: '40x30', label: '4سم × 3سم (40mm × 30mm)' },
+                { value: 'custom', label: 'مقاس مخصص...' },
                 { value: 'a4', label: 'ورق عادي A4 (شبكة ملصقات)' },
               ]}
               value={labelFormat}
@@ -359,7 +382,7 @@ export const BarcodePrintModal: React.FC<BarcodePrintModalProps> = ({ isOpen, on
             />
           </div>
 
-          <div className="flex items-center justify-between sm:justify-end gap-2 pt-4">
+          <div className="flex items-center justify-between sm:justify-end gap-2">
             <label className="flex items-center gap-2 cursor-pointer text-slate-300">
               <input
                 type="checkbox"
@@ -374,6 +397,44 @@ export const BarcodePrintModal: React.FC<BarcodePrintModalProps> = ({ isOpen, on
               طباعة الآن
             </Button>
           </div>
+
+          {labelFormat === 'custom' && (
+            <div className="sm:col-span-3 grid grid-cols-3 gap-3 pt-1 border-t border-slate-800 mt-1">
+              <div>
+                <label className="block text-slate-400 font-semibold mb-1">العرض (مم)</label>
+                <Input
+                  type="number"
+                  min={20}
+                  max={150}
+                  value={customWidth}
+                  onChange={(e) => setCustomWidth(Math.max(20, parseInt(e.target.value) || 20))}
+                  className="w-full text-center"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 font-semibold mb-1">الارتفاع (مم)</label>
+                <Input
+                  type="number"
+                  min={15}
+                  max={150}
+                  value={customHeight}
+                  onChange={(e) => setCustomHeight(Math.max(15, parseInt(e.target.value) || 15))}
+                  className="w-full text-center"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-400 font-semibold mb-1">الفجوة بين الملصقات (مم)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={customGap}
+                  onChange={(e) => setCustomGap(Math.max(0, parseInt(e.target.value) || 0))}
+                  className="w-full text-center"
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Informational banner */}
@@ -381,16 +442,19 @@ export const BarcodePrintModal: React.FC<BarcodePrintModalProps> = ({ isOpen, on
           <div className="flex items-center gap-2">
             <BarcodeIcon className="w-4 h-4 shrink-0 text-indigo-400" />
             <span>
-              باركود قياسي <strong>Code 128 قياسي ومقروء 100%</strong> بواسطة جميع أجهزة ومقارئ الباركود اليدوية والكاميرا.
+              باركود قياسي <strong>Code 128</strong> — لو الملصقات لسه بتدخل في بعضها بعد الطباعة، زوّد "الفجوة بين
+              الملصقات" شوية من إعدادات المقاس المخصص.
             </span>
           </div>
-          <span className="bg-indigo-900/80 text-indigo-200 px-2 py-0.5 rounded font-mono font-bold">Code 128 Standard</span>
+          <span className="bg-indigo-900/80 text-indigo-200 px-2 py-0.5 rounded font-mono font-bold">
+            {dims.widthMm}×{dims.heightMm}mm
+          </span>
         </div>
 
-        {/* معاينة على الشاشة فقط — الطباعة بتحصل من مستند منفصل تماماً، مش من هنا */}
+        {/* معاينة على الشاشة فقط — الطباعة بتحصل من مستند منفصل تماماً */}
         <div className="p-4 bg-slate-100 rounded-xl text-black max-h-[60vh] overflow-y-auto border border-slate-300 shadow-inner">
           {items.length > 0 ? (
-            <LabelsGrid items={items} labelFormat={labelFormat} />
+            <LabelsGrid items={items} dims={dims} />
           ) : (
             <p className="text-center text-slate-500 py-6 text-sm">لا يوجد أصناف/متغيرات لطباعة ملصقاتها.</p>
           )}

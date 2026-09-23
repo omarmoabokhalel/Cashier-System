@@ -28,8 +28,11 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 
+import { useAuthStore } from '../../store/useAuthStore';
+
 export const ReportsShell: React.FC = () => {
   const { showToast } = useToast();
+  const { user, hasPermission } = useAuthStore();
 
   // Filters State
   const [startDate, setStartDate] = useState<string>(
@@ -43,9 +46,9 @@ export const ReportsShell: React.FC = () => {
   const [reportData, setReportData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const reportsList = [
+  const allReportsList = [
     { id: 'sales', name: 'تقرير الفواتير والمبيعات', icon: TrendingUp },
-    { id: 'profit', name: 'تقرير الأرباح وتكلفة البضاعة (COGS)', icon: DollarSign },
+    { id: 'profit', name: 'تقرير الأرباح وتكلفة البضاعة (COGS)', icon: DollarSign, reqPerm: 'view_profit' },
     { id: 'products', name: 'تقرير مبيعات المنتجات والأصناف', icon: Package },
     { id: 'categories', name: 'تقرير مبيعات التصنيفات', icon: Layers },
     { id: 'cashiers', name: 'تقرير أداء ورجال الكاشير', icon: Users },
@@ -54,13 +57,19 @@ export const ReportsShell: React.FC = () => {
     { id: 'returns', name: 'تقرير المرتجعات والاسترداد', icon: RotateCcw },
     { id: 'inventory', name: 'تقرير تقييم المخزون الحالي', icon: Package },
     { id: 'movements', name: 'سجل حركات المخزون التفصيلي', icon: Clock },
-    { id: 'purchases', name: 'تقرير المشتريات والشحنات الواردة', icon: ShoppingBag },
-    { id: 'suppliers', name: 'تقرير كشف حساب الموردين', icon: Truck },
-    { id: 'expenses', name: 'تقرير المصروفات والنثريات', icon: CircleDollarSign },
-    { id: 'register', name: 'تقرير حركات الخزنة وعجز الورديات', icon: Landmark },
+    { id: 'purchases', name: 'تقرير المشتريات والشحنات الواردة', icon: ShoppingBag, reqPerm: 'manage_purchases' },
+    { id: 'suppliers', name: 'تقرير كشف حساب الموردين', icon: Truck, reqPerm: 'manage_suppliers' },
+    { id: 'expenses', name: 'تقرير المصروفات والنثريات', icon: CircleDollarSign, reqPerm: 'manage_expenses' },
+    { id: 'register', name: 'تقرير حركات الخزنة وعجز الورديات', icon: Landmark, reqPerm: 'manage_cash_register' },
     { id: 'slow_moving', name: 'الأصناف بطيئة الحركة (Slow Moving)', icon: Clock },
     { id: 'low_stock', name: 'تنبيهات نواقص المخزون (Low Stock)', icon: AlertTriangle },
   ];
+
+  const reportsList = allReportsList.filter((r) => {
+    if (user?.roleCode === 'cashier' && r.id === 'profit') return false;
+    if (r.reqPerm && !hasPermission(r.reqPerm as any)) return false;
+    return true;
+  });
 
   useEffect(() => {
     fetchActiveReport();

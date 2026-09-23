@@ -13,6 +13,7 @@ import { HeldSalesModal } from '../../components/pos/HeldSalesModal';
 import { ItemDiscountModal } from '../../components/pos/ItemDiscountModal';
 import { ReceiptPrintModal } from '../../components/pos/ReceiptPrintModal';
 import { KeyboardShortcutsBar } from '../../components/pos/KeyboardShortcutsBar';
+import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
 import {
   Search,
   Barcode,
@@ -81,7 +82,17 @@ export const POSShell: React.FC = () => {
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'split'>('cash');
   const [paidCashAmount, setPaidCashAmount] = useState<string>('');
+  const [sellerName, setSellerName] = useState<string>('');
   const [isProcessingSale, setIsProcessingSale] = useState(false);
+
+  useEffect(() => {
+    if (user?.fullName) {
+      setSellerName(user.fullName);
+    } else {
+      const saved = localStorage.getItem('admin_display_name') || 'المالك / البائع';
+      setSellerName(saved);
+    }
+  }, [user]);
 
   // State: Receipt Printing
   const [completedSale, setCompletedSale] = useState<any | null>(null);
@@ -538,6 +549,10 @@ export const POSShell: React.FC = () => {
   // Finalize Sale & Call Server-Side RPC
   const handleFinalizeSale = async () => {
     if (cart.length === 0) return;
+    if (!sellerName.trim()) {
+      showToast('warning', 'اسم البائع مطلوب', 'يرجى إدخال اسم البائع قبل إتمام الشراء');
+      return;
+    }
     setIsProcessingSale(true);
 
     try {
@@ -555,7 +570,7 @@ export const POSShell: React.FC = () => {
           return;
         }
       }
-      // Dynamic shift ID fallback if cashier shift system isn't active
+      // Dynamic shift ID fallback or open auto shift
       let shiftId = '00000000-0000-0000-0000-000000000001';
       const { data: openShiftData } = await (supabase.from('cashier_shifts') as any)
         .select('id')
@@ -565,6 +580,27 @@ export const POSShell: React.FC = () => {
 
       if (openShiftData && openShiftData.length > 0) {
         shiftId = (openShiftData[0] as any).id;
+      } else {
+        const isValidUuid = (id?: string) => !!id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+        const defaultBranchId = '00000000-0000-0000-0000-000000000001';
+        const defaultRegisterId = '00000000-0000-0000-0000-000000000001';
+        const defaultCashierId = isValidUuid(user?.id) ? user!.id : '00000000-0000-0000-0000-000000000001';
+
+        const { data: newShift } = await (supabase.from('cashier_shifts') as any)
+          .insert({
+            branch_id: defaultBranchId,
+            cash_register_id: defaultRegisterId,
+            cashier_id: defaultCashierId,
+            opening_balance: 0,
+            status: 'open',
+            opened_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (newShift?.id) {
+          shiftId = newShift.id;
+        }
       }
 
       const itemsPayload = cart.map((item) => {
@@ -589,6 +625,11 @@ export const POSShell: React.FC = () => {
         },
       ];
 
+      const creatorRole = user?.roleCode || 'cashier';
+      const saleNotes = orderDiscountAmount > 0
+        ? `خصم فاتورة: -${orderDiscountAmount.toFixed(2)} ج.م | seller:${sellerName.trim()} | role:${creatorRole}`
+        : `عملية بيع من POS | seller:${sellerName.trim()} | role:${creatorRole}`;
+
       const { data, error }: { data: any; error: any } = await (supabase.rpc as any)('rpc_create_sale', {
         p_cashier_shift_id: shiftId,
         p_customer_id: selectedCustomer.id || null,
@@ -600,7 +641,7 @@ export const POSShell: React.FC = () => {
         p_total_amount: totalAmount,
         p_paid_amount: parseFloat(paidCashAmount) || totalAmount,
         p_change_amount: changeAmount,
-        p_notes: orderDiscountAmount > 0 ? `خصم فاتورة: -${orderDiscountAmount.toFixed(2)} ج.م` : 'عملية بيع من POS',
+        p_notes: saleNotes,
         p_items: itemsPayload,
         p_payments: paymentsPayload,
         p_idempotency_key: `POS-SALE-${Date.now()}-${Math.floor(Math.random()*10000)}`,
@@ -610,6 +651,9 @@ export const POSShell: React.FC = () => {
         showToast('error', 'فشلت عملية البيع', error.message);
       } else {
         showToast('success', 'تمت عملية البيع بنجاح!', `رقم الفاتورة: #${data?.invoice_number || '1'}`);
+
+        // Reconcile shift cash totals immediately
+        reconcileShiftTotals(shiftId).catch(console.error);
 
         // Process Customer Loyalty Points
         if (selectedCustomer.id && totalAmount > 0) {
@@ -646,7 +690,7 @@ export const POSShell: React.FC = () => {
         setCompletedSale({
           invoiceNumber: (data?.invoice_number || '1').replace(/^INV-0*/i, '') || '1',
           createdAt: new Date().toISOString(),
-          cashierName: user?.fullName || user?.user_metadata?.full_name || localStorage.getItem('admin_display_name') || 'المالك / البائع',
+          cashierName: sellerName.trim() || user?.fullName || 'المالك / البائع',
           customerName: selectedCustomer.name,
           items: cart.map((i) => ({
             productNameAr: i.productNameAr,
@@ -1069,6 +1113,22 @@ export const POSShell: React.FC = () => {
         maxWidth="md"
       >
         <div className="space-y-4 font-sans" dir="rtl">
+          {/* Seller Name Selection / Input (Defaulted & Editable) */}
+          <div className="p-3 bg-indigo-950/40 border border-indigo-500/40 rounded-2xl space-y-1.5">
+            <label className="block text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+              <User className="w-4 h-4 text-indigo-400" />
+              <span>اسم البائع / مسؤول الفاتورة * (مكتوب تلقائياً وتستطيع تعديله)</span>
+            </label>
+            <Input
+              type="text"
+              placeholder="أدخل اسم البائع..."
+              value={sellerName}
+              onChange={(e) => setSellerName(e.target.value)}
+              required
+              className="bg-slate-950 border-indigo-500/50 text-white font-bold text-sm"
+            />
+          </div>
+
           {/* Invoice Discount Section */}
           <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl space-y-2.5">
             <div className="flex items-center justify-between">

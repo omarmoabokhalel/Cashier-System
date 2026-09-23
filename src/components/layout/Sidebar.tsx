@@ -114,6 +114,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             return (
               <button
                 key={item.id}
+                data-nav={item.id}
                 onClick={() => {
                   onSelectNav(item.id);
                   onClose();

@@ -22,7 +22,10 @@ import {
   DollarSign,
   FileText,
   Pencil,
+  Trash2,
+  RotateCcw,
 } from 'lucide-react';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 
 import { useAuthStore } from '../../store/useAuthStore';
 
@@ -40,18 +43,29 @@ interface SaleRecord {
   payment_status: string;
   notes: string | null;
   cashier_id?: string | null;
+  cashier_shift_id?: string | null;
   cashier?: { id: string; full_name: string };
   customers?: { id: string; full_name: string; phone: string | null };
   sale_items?: any[];
   payments?: any[];
 }
 
-export const SalesShell: React.FC = () => {
+export interface SalesShellProps {
+  onNavigate?: (page: string) => void;
+}
+
+export const SalesShell: React.FC<SalesShellProps> = ({ onNavigate }) => {
   const { showToast } = useToast();
-  const { user } = useAuthStore();
+  const { user, hasPermission } = useAuthStore();
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+
+  const canDeleteInvoice = user?.roleCode === 'owner' || hasPermission('cancel_sale');
+
+  // Delete Invoice State
+  const [saleToDelete, setSaleToDelete] = useState<SaleRecord | null>(null);
+  const [isDeletingSale, setIsDeletingSale] = useState(false);
 
   // Shift & Date Isolation State
   const [activeShift, setActiveShift] = useState<{ id: string; opened_at: string } | null>(null);
@@ -181,8 +195,73 @@ export const SalesShell: React.FC = () => {
     setIsEditModalOpen(true);
   };
 
+  const handleConfirmDeleteSale = async () => {
+    if (!saleToDelete) return;
+    setIsDeletingSale(true);
+    try {
+      const branchId = '00000000-0000-0000-0000-000000000001';
+      if (saleToDelete.sale_items && saleToDelete.sale_items.length > 0) {
+        for (const item of saleToDelete.sale_items) {
+          const varId = item.variant_id || item.product_variants?.id;
+          if (varId && Number(item.quantity) > 0) {
+            const { data: stockData }: { data: any } = await (supabase.from('branch_variant_stock') as any)
+              .select('id, quantity')
+              .eq('branch_id', branchId)
+              .eq('variant_id', varId)
+              .maybeSingle();
+
+            if (stockData) {
+              const newQty = Number(stockData.quantity || 0) + Number(item.quantity);
+              await (supabase.from('branch_variant_stock') as any)
+                .update({ quantity: newQty })
+                .eq('id', stockData.id);
+            } else {
+              await (supabase.from('branch_variant_stock') as any).insert({
+                branch_id: branchId,
+                variant_id: varId,
+                quantity: Number(item.quantity),
+              });
+            }
+          }
+        }
+      }
+
+      await (supabase.from('sale_items') as any).delete().eq('sale_id', saleToDelete.id);
+      await (supabase.from('payments') as any).delete().eq('sale_id', saleToDelete.id);
+      const { error } = await (supabase.from('sales') as any).delete().eq('id', saleToDelete.id);
+
+      if (error) {
+        showToast('error', 'فشل مسح الفاتورة', error.message);
+      } else {
+        showToast('success', 'تم مسح الفاتورة بنجاح', `تم مسح الفاتورة رقم ${saleToDelete.invoice_number} وإعادة الكميات للمخزون`);
+        setSaleToDelete(null);
+        fetchSalesData();
+      }
+    } catch (e: any) {
+      console.error(e);
+      showToast('error', 'خطأ أثناء مسح الفاتورة', e.message);
+    } finally {
+      setIsDeletingSale(false);
+    }
+  };
+
+  const isOwnerCreatedInvoice = (s: SaleRecord) => {
+    if (s.notes && s.notes.includes('role:owner')) return true;
+    if (s.cashier_id === '00000000-0000-0000-0000-000000000001' && s.cashier_id !== user?.id) return true;
+    if (s.cashier && (s.cashier as any).roles?.code === 'owner') return true;
+    const seller = getSellerName(s);
+    const adminName = localStorage.getItem('admin_display_name') || 'المالك / المدير';
+    if (seller === adminName || seller.includes('المالك') || seller.includes('مدير المتجر')) return true;
+    return false;
+  };
+
   // Filter Sales Logic
   const filteredSales = sales.filter((s) => {
+    // 0. Role isolation: Cashier must NEVER see invoices created by Owner
+    if (user?.roleCode === 'cashier' && isOwnerCreatedInvoice(s)) {
+      return false;
+    }
+
     // 1. Shift / Date Filter
     if (shiftFilter === 'current') {
       if (activeShift?.id) {
@@ -413,6 +492,24 @@ export const SalesShell: React.FC = () => {
                     <td className="p-3 text-center">
                       <div className="flex items-center justify-center gap-1.5">
                         <Button
+                          onClick={() => {
+                            localStorage.setItem('selected_return_invoice_number', s.invoice_number);
+                            if (onNavigate) {
+                              onNavigate('returns');
+                            } else {
+                              const navBtn = document.querySelector('[data-nav="returns"]') as HTMLElement;
+                              if (navBtn) navBtn.click();
+                            }
+                          }}
+                          size="sm"
+                          variant="secondary"
+                          className="bg-amber-950/80 hover:bg-amber-900 border border-amber-700/60 text-amber-200 gap-1 text-[11px] px-2.5 py-1"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                          <span>إرجاع</span>
+                        </Button>
+
+                        <Button
                           onClick={() => handleOpenEditModal(s)}
                           size="sm"
                           variant="secondary"
@@ -422,15 +519,17 @@ export const SalesShell: React.FC = () => {
                           <span>تعديل</span>
                         </Button>
 
-                        <Button
-                          onClick={() => handleOpenReceipt(s)}
-                          size="sm"
-                          variant="secondary"
-                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 gap-1 text-[11px] px-2.5 py-1"
-                        >
-                          <Printer className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>طباعة</span>
-                        </Button>
+                        {canDeleteInvoice && (
+                          <Button
+                            onClick={() => setSaleToDelete(s)}
+                            size="sm"
+                            variant="secondary"
+                            className="bg-rose-950/80 hover:bg-rose-900 border border-rose-800/60 text-rose-200 gap-1 text-[11px] px-2.5 py-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                            <span>حذف</span>
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -454,6 +553,19 @@ export const SalesShell: React.FC = () => {
         isOpen={isReceiptModalOpen}
         onClose={() => setIsReceiptModalOpen(false)}
         saleData={selectedSale}
+      />
+
+      {/* CONFIRM DELETE DIALOG */}
+      <ConfirmDialog
+        isOpen={!!saleToDelete}
+        onClose={() => setSaleToDelete(null)}
+        onConfirm={handleConfirmDeleteSale}
+        title="تأكيد مسح الفاتورة"
+        message={`هل أنت تأكد من مسح الفاتورة رقم (${saleToDelete?.invoice_number}) نهائياً؟ سيتم إلغاء الفاتورة وإعادة كميات كافة الأصناف الواردة بها إلى رصيد المخزون.`}
+        confirmText="حذف الفاتورة وإعادة المخزون"
+        cancelText="إلغاء"
+        isLoading={isDeletingSale}
+        variant="danger"
       />
     </div>
   );

@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Dialog } from '../../components/ui/Dialog';
 import { useToast } from '../../components/ui/Toast';
+import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
 import {
   RotateCcw,
   Search,
@@ -18,6 +19,11 @@ import {
   ArrowRight,
   RefreshCw,
   Tag,
+  Plus,
+  Minus,
+  CheckSquare,
+  Square,
+  Check,
 } from 'lucide-react';
 
 interface ReturnItemForm {
@@ -51,6 +57,42 @@ export const ReturnsShell: React.FC = () => {
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
+  useEffect(() => {
+    const pendingNum = localStorage.getItem('selected_return_invoice_number');
+    if (pendingNum) {
+      localStorage.removeItem('selected_return_invoice_number');
+      setSearchQuery(pendingNum);
+      const autoFetch = async () => {
+        try {
+          const { data } = await supabase
+            .from('sales')
+            .select(`
+              id, invoice_number, subtotal, tax_amount, total_amount, paid_amount, created_at,
+              customers(full_name, phone),
+              sale_items(
+                id, variant_id, quantity, returned_quantity, unit_price, cost_price, discount_amount, total_price,
+                product_variants(
+                  sku, barcode,
+                  sizes(code, name_ar),
+                  colors(name_ar, hex_code),
+                  products(name_ar, name_en)
+                )
+              )
+            `)
+            .eq('invoice_number', pendingNum)
+            .maybeSingle();
+
+          if (data) {
+            selectSale(data);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      };
+      autoFetch();
+    }
+  }, []);
 
   useEffect(() => {
     const q = searchQuery.trim();
@@ -148,11 +190,12 @@ export const ReturnsShell: React.FC = () => {
 
   const selectSale = (sale: any) => {
     setSelectedSale(sale);
-    const itemsForm: ReturnItemForm[] = sale.sale_items.map((si: any) => {
+    const itemsForm: ReturnItemForm[] = (sale.sale_items || []).map((si: any) => {
       const returnable = si.quantity - (si.returned_quantity || 0);
       const effectiveUnitPrice = si.quantity > 0
         ? Number(si.unit_price) - (Number(si.discount_amount || 0) / si.quantity)
         : Number(si.unit_price);
+      const maxReturnable = Math.max(0, returnable);
       return {
         saleItemId: si.id,
         variantId: si.variant_id,
@@ -162,8 +205,8 @@ export const ReturnsShell: React.FC = () => {
         unitPrice: Math.max(0, effectiveUnitPrice),
         purchasedQty: si.quantity,
         alreadyReturnedQty: si.returned_quantity || 0,
-        returnableQty: Math.max(0, returnable),
-        requestedQty: 0,
+        returnableQty: maxReturnable,
+        requestedQty: maxReturnable, // Default to full returnable quantity
       };
     });
     setReturnItems(itemsForm);
@@ -175,6 +218,50 @@ export const ReturnsShell: React.FC = () => {
         if (item.saleItemId === saleItemId) {
           const validQty = Math.max(0, Math.min(item.returnableQty, qty));
           return { ...item, requestedQty: validQty };
+        }
+        return item;
+      })
+    );
+  };
+
+  const handleReturnAll = () => {
+    setReturnItems((prev) =>
+      prev.map((item) => ({
+        ...item,
+        requestedQty: item.returnableQty,
+      }))
+    );
+    showToast('info', 'تم تحديد كافة الأصناف المتاحة للإرجاع', 'تم ضبط كميات جميع أصناف الفاتورة بالكامل');
+  };
+
+  const handleClearAll = () => {
+    setReturnItems((prev) =>
+      prev.map((item) => ({
+        ...item,
+        requestedQty: 0,
+      }))
+    );
+    showToast('info', 'تم تصفير الكميات', 'قم بإدخال وتحديد الأصناف والكميات المراد إرجاعها مخصصاً');
+  };
+
+  const toggleItemSelection = (saleItemId: string) => {
+    setReturnItems((prev) =>
+      prev.map((item) => {
+        if (item.saleItemId === saleItemId) {
+          const newQty = item.requestedQty > 0 ? 0 : item.returnableQty;
+          return { ...item, requestedQty: newQty };
+        }
+        return item;
+      })
+    );
+  };
+
+  const adjustItemQty = (saleItemId: string, delta: number) => {
+    setReturnItems((prev) =>
+      prev.map((item) => {
+        if (item.saleItemId === saleItemId) {
+          const newQty = Math.max(0, Math.min(item.returnableQty, item.requestedQty + delta));
+          return { ...item, requestedQty: newQty };
         }
         return item;
       })
@@ -222,6 +309,7 @@ export const ReturnsShell: React.FC = () => {
         showToast('error', 'فشلت عملية الإرجاع', error.message);
       } else {
         showToast('success', 'تم الإرجاع بنجاح!', `رقم المستند: ${data?.return_number}`);
+        reconcileShiftTotals(shiftId).catch(console.error);
         setCompletedReturn({
           returnNumber: data?.return_number,
           refundAmount: data?.refund_amount,
@@ -359,50 +447,109 @@ export const ReturnsShell: React.FC = () => {
                 </Button>
               </div>
 
+              {/* QUICK BATCH ACTIONS BAR */}
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs">
+                <span className="font-bold text-slate-300">خيارات التحديد السريع للأصناف:</span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    onClick={handleReturnAll}
+                    size="sm"
+                    variant="secondary"
+                    className="bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-xs gap-1.5 px-3 py-1 font-bold"
+                  >
+                    <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>إرجاع الفاتورة بالكامل (الكل)</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleClearAll}
+                    size="sm"
+                    variant="secondary"
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs gap-1.5 px-3 py-1 font-bold"
+                  >
+                    <Square className="w-3.5 h-3.5 text-slate-400" />
+                    <span>تصفير الكميات (إلغاء التحديد)</span>
+                  </Button>
+                </div>
+              </div>
+
               {/* Items Table */}
               <div className="overflow-x-auto">
                 <table className="w-full text-right text-xs">
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                      <th className="py-2 px-2 text-center w-10">تحديد</th>
                       <th className="py-2 px-2">الصنف</th>
                       <th className="py-2 px-2 text-center">المقاس / اللون</th>
-                      <th className="py-2 px-2 text-center">السعر</th>
+                      <th className="py-2 px-2 text-center">السعر الصافي</th>
                       <th className="py-2 px-2 text-center">المشتراة</th>
-                      <th className="py-2 px-2 text-center">المعادية سابقاً</th>
+                      <th className="py-2 px-2 text-center">المعادة سابقاً</th>
                       <th className="py-2 px-2 text-center">المتاحة للإرجاع</th>
-                      <th className="py-2 px-2 text-center w-28">كمية الإرجاع</th>
+                      <th className="py-2 px-2 text-center w-36">كمية الإرجاع المطلوبة</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60">
-                    {returnItems.map((item) => (
-                      <tr key={item.saleItemId} className="hover:bg-slate-950/40">
-                        <td className="py-2.5 px-2 font-bold text-slate-100">{item.productNameAr}</td>
-                        <td className="py-2.5 px-2 text-center text-slate-300">
-                          {item.sizeCode} • {item.colorNameAr}
-                        </td>
-                        <td className="py-2.5 px-2 text-center font-mono font-bold text-slate-200">
-                          {item.unitPrice.toFixed(2)}
-                        </td>
-                        <td className="py-2.5 px-2 text-center font-mono">{item.purchasedQty}</td>
-                        <td className="py-2.5 px-2 text-center font-mono text-amber-400">
-                          {item.alreadyReturnedQty}
-                        </td>
-                        <td className="py-2.5 px-2 text-center font-mono font-bold text-emerald-400">
-                          {item.returnableQty}
-                        </td>
-                        <td className="py-2.5 px-2 text-center">
-                          <Input
-                            type="number"
-                            min={0}
-                            max={item.returnableQty}
-                            disabled={item.returnableQty <= 0}
-                            value={item.requestedQty}
-                            onChange={(e) => updateItemReturnQty(item.saleItemId, parseInt(e.target.value) || 0)}
-                            className="text-center font-mono h-8 text-xs font-bold"
-                          />
-                        </td>
-                      </tr>
-                    ))}
+                    {returnItems.map((item) => {
+                      const isSelected = item.requestedQty > 0;
+                      return (
+                        <tr key={item.saleItemId} className={`transition-colors ${isSelected ? 'bg-rose-950/20' : 'hover:bg-slate-950/40'}`}>
+                          <td className="py-2.5 px-2 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              disabled={item.returnableQty <= 0}
+                              onChange={() => toggleItemSelection(item.saleItemId)}
+                              className="w-4 h-4 accent-rose-500 rounded cursor-pointer"
+                            />
+                          </td>
+                          <td className="py-2.5 px-2 font-bold text-slate-100">{item.productNameAr}</td>
+                          <td className="py-2.5 px-2 text-center text-slate-300">
+                            {item.sizeCode} • {item.colorNameAr}
+                          </td>
+                          <td className="py-2.5 px-2 text-center font-mono font-bold text-slate-200">
+                            {item.unitPrice.toFixed(2)} ج.م
+                          </td>
+                          <td className="py-2.5 px-2 text-center font-mono">{item.purchasedQty}</td>
+                          <td className="py-2.5 px-2 text-center font-mono text-amber-400">
+                            {item.alreadyReturnedQty}
+                          </td>
+                          <td className="py-2.5 px-2 text-center font-mono font-bold text-emerald-400">
+                            {item.returnableQty}
+                          </td>
+                          <td className="py-2.5 px-2 text-center">
+                            <div className="flex items-center justify-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => adjustItemQty(item.saleItemId, -1)}
+                                disabled={item.requestedQty <= 0 || item.returnableQty <= 0}
+                                className="w-6 h-6 flex items-center justify-center bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded-lg text-slate-200 font-bold transition-colors"
+                              >
+                                <Minus className="w-3 h-3" />
+                              </button>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={item.returnableQty}
+                                disabled={item.returnableQty <= 0}
+                                value={item.requestedQty}
+                                onFocus={(e) => e.target.select()}
+                                onChange={(e) => updateItemReturnQty(item.saleItemId, parseInt(e.target.value) || 0)}
+                                className="w-14 text-center font-mono h-7 text-xs font-black p-0 border-0 bg-transparent focus:ring-0"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => adjustItemQty(item.saleItemId, 1)}
+                                disabled={item.requestedQty >= item.returnableQty || item.returnableQty <= 0}
+                                className="w-6 h-6 flex items-center justify-center bg-slate-800 hover:bg-slate-700 disabled:opacity-30 rounded-lg text-slate-200 font-bold transition-colors"
+                              >
+                                <Plus className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

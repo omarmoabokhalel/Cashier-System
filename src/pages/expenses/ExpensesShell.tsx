@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Dialog } from '../../components/ui/Dialog';
 import { useToast } from '../../components/ui/Toast';
+import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
 import {
   CircleDollarSign,
   Plus,
@@ -21,7 +22,12 @@ import {
   Package,
   Users,
   Layers,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+
+import { useAuthStore } from '../../store/useAuthStore';
 
 interface Expense {
   id: string;
@@ -34,12 +40,13 @@ interface Expense {
 
 export const ExpensesShell: React.FC = () => {
   const { showToast } = useToast();
+  const { user } = useAuthStore();
 
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
 
-  // Modal State
+  // New Expense Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [formData, setFormData] = useState({
     category: 'Electricity',
@@ -48,6 +55,27 @@ export const ExpensesShell: React.FC = () => {
     payee: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Edit Expense Modal State
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editFormData, setEditFormData] = useState({
+    category: 'Electricity',
+    amount: '',
+    description: '',
+    payee: '',
+    created_at: '',
+  });
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+
+  // Delete Expense State
+  const [expenseToDelete, setExpenseToDelete] = useState<Expense | null>(null);
+  const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+
+  useEffect(() => {
+    const defaultName = user?.fullName || localStorage.getItem('admin_display_name') || '';
+    setFormData((prev) => ({ ...prev, payee: prev.payee || defaultName }));
+  }, [user, isModalOpen]);
 
   const categoriesMap: Record<string, { label: string; icon: any; color: string }> = {
     Rent: { label: 'إيجارات ومباني', icon: Home, color: 'text-amber-400 bg-amber-950/60' },
@@ -86,6 +114,10 @@ export const ExpensesShell: React.FC = () => {
   const handleRecordExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     const amountVal = parseFloat(formData.amount);
+    if (!formData.payee.trim()) {
+      showToast('warning', 'اسم المنفذ مطلوب', 'يرجى كتابة اسم الشخص المسدد أو المستلم للمصروف (إجباري)');
+      return;
+    }
     if (!amountVal || amountVal <= 0 || !formData.category) {
       showToast('warning', 'بيانات غير مكتملة', 'يرجى اختيار تصنيف المصروف وإدخال المبلغ');
       return;
@@ -116,6 +148,7 @@ export const ExpensesShell: React.FC = () => {
         showToast('error', 'فشل تسجيل المصروف', error.message);
       } else {
         showToast('success', 'تم تسجيل المصروف بنجاح!', `${amountVal.toFixed(2)} ج.م`);
+        reconcileShiftTotals(shiftId).catch(console.error);
         setIsModalOpen(false);
         setFormData({ category: 'Electricity', amount: '', description: '', payee: '' });
         fetchExpenses();
@@ -124,6 +157,88 @@ export const ExpensesShell: React.FC = () => {
       showToast('error', 'خطأ أثناء التسجيل', e.message);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleOpenEdit = (exp: Expense) => {
+    setEditingExpense(exp);
+    const d = new Date(exp.created_at);
+    const tzOffset = d.getTimezoneOffset() * 60000;
+    const localISO = new Date(d.getTime() - tzOffset).toISOString().slice(0, 16);
+
+    setEditFormData({
+      category: exp.category || 'Other',
+      amount: String(exp.amount),
+      description: exp.description || '',
+      payee: exp.payee || '',
+      created_at: localISO,
+    });
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingExpense) return;
+    const amountVal = parseFloat(editFormData.amount);
+    if (!editFormData.payee.trim()) {
+      showToast('warning', 'اسم المنفذ مطلوب', 'يرجى كتابة اسم الشخص المسدد أو المستلم للمصروف (إجباري)');
+      return;
+    }
+    if (!amountVal || amountVal <= 0 || !editFormData.category) {
+      showToast('warning', 'بيانات غير مكتملة', 'يرجى اختيار تصنيف المصروف وإدخال المبلغ');
+      return;
+    }
+
+    setIsSubmittingEdit(true);
+    try {
+      const updatedDate = editFormData.created_at
+        ? new Date(editFormData.created_at).toISOString()
+        : editingExpense.created_at;
+
+      const { error } = await (supabase.from('expenses') as any)
+        .update({
+          category: editFormData.category,
+          amount: amountVal,
+          description: editFormData.description.trim(),
+          payee: editFormData.payee.trim(),
+          created_at: updatedDate,
+        })
+        .eq('id', editingExpense.id);
+
+      if (error) {
+        showToast('error', 'فشل تعديل المصروف', error.message);
+      } else {
+        showToast('success', 'تم تعديل المصروف بنجاح!');
+        setIsEditModalOpen(false);
+        setEditingExpense(null);
+        fetchExpenses();
+      }
+    } catch (e: any) {
+      showToast('error', 'خطأ أثناء التعديل', e.message);
+    } finally {
+      setIsSubmittingEdit(false);
+    }
+  };
+
+  const handleConfirmDeleteExpense = async () => {
+    if (!expenseToDelete) return;
+    setIsDeletingExpense(true);
+    try {
+      const { error } = await (supabase.from('expenses') as any)
+        .delete()
+        .eq('id', expenseToDelete.id);
+
+      if (error) {
+        showToast('error', 'فشل مسح المصروف', error.message);
+      } else {
+        showToast('success', 'تم مسح المصروف بنجاح');
+        setExpenseToDelete(null);
+        fetchExpenses();
+      }
+    } catch (e: any) {
+      showToast('error', 'خطأ أثناء مسح المصروف', e.message);
+    } finally {
+      setIsDeletingExpense(false);
     }
   };
 
@@ -218,9 +333,33 @@ export const ExpensesShell: React.FC = () => {
                   </div>
                 </div>
 
-                <span className="text-base font-black text-rose-400 font-mono">
-                  -{Number(exp.amount).toFixed(2)} ج.م
-                </span>
+                <div className="flex items-center gap-4">
+                  <span className="text-base font-black text-rose-400 font-mono">
+                    -{Number(exp.amount).toFixed(2)} ج.م
+                  </span>
+
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      onClick={() => handleOpenEdit(exp)}
+                      size="sm"
+                      variant="secondary"
+                      className="bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 gap-1 text-[11px] px-2.5 py-1"
+                    >
+                      <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>تعديل</span>
+                    </Button>
+
+                    <Button
+                      onClick={() => setExpenseToDelete(exp)}
+                      size="sm"
+                      variant="secondary"
+                      className="bg-rose-950/80 hover:bg-rose-900 border border-rose-800/60 text-rose-200 gap-1 text-[11px] px-2.5 py-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                      <span>حذف</span>
+                    </Button>
+                  </div>
+                </div>
               </Card>
             );
           })
@@ -268,11 +407,12 @@ export const ExpensesShell: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">اسم المستلم / الجهه (اختياري)</label>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">اسم الشخص المسدد / المستلم / المنفذ للمصروف * (إجباري)</label>
             <Input
-              placeholder="مثال: شركة الكهرباء / عامل الصيانة..."
+              placeholder="مثال: أحمد المحاسب / شركة الكهرباء..."
               value={formData.payee}
               onChange={(e) => setFormData({ ...formData, payee: e.target.value })}
+              required
             />
           </div>
 
@@ -286,6 +426,89 @@ export const ExpensesShell: React.FC = () => {
           </div>
         </form>
       </Dialog>
+
+      {/* EDIT EXPENSE DIALOG */}
+      <Dialog isOpen={isEditModalOpen} onClose={() => setIsEditModalOpen(false)} title="تعديل المصروف" maxWidth="md">
+        <form onSubmit={handleUpdateExpense} className="space-y-4 font-sans" dir="rtl">
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">تاريخ ووقت المصروف (تعديل التاريخ والوقت)</label>
+            <Input
+              type="datetime-local"
+              value={editFormData.created_at}
+              onChange={(e) => setEditFormData({ ...editFormData, created_at: e.target.value })}
+              className="bg-slate-950 border-slate-800 font-mono text-xs"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">تصنيف المصروف *</label>
+            <select
+              value={editFormData.category}
+              onChange={(e) => setEditFormData({ ...editFormData, category: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-bold focus:outline-none focus:border-indigo-500"
+            >
+              {Object.entries(categoriesMap).map(([key, meta]) => (
+                <option key={key} value={key}>{meta.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">المبلغ (ج.م) *</label>
+            <Input
+              type="number"
+              step="0.5"
+              min="0"
+              placeholder="0.00"
+              value={editFormData.amount}
+              onChange={(e) => setEditFormData({ ...editFormData, amount: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">وصف المصروف *</label>
+            <Input
+              placeholder="وصف المصروف..."
+              value={editFormData.description}
+              onChange={(e) => setEditFormData({ ...editFormData, description: e.target.value })}
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">اسم الشخص المسدد / المستلم / المنفذ للمصروف * (إجباري)</label>
+            <Input
+              placeholder="اسم المنفذ..."
+              value={editFormData.payee}
+              onChange={(e) => setEditFormData({ ...editFormData, payee: e.target.value })}
+              required
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button variant="secondary" type="button" onClick={() => setIsEditModalOpen(false)}>
+              إلغاء
+            </Button>
+            <Button type="submit" isLoading={isSubmittingEdit} variant="primary" className="bg-indigo-600 hover:bg-indigo-500">
+              حفظ التعديلات
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* CONFIRM DELETE EXPENSE DIALOG */}
+      <ConfirmDialog
+        isOpen={!!expenseToDelete}
+        onClose={() => setExpenseToDelete(null)}
+        onConfirm={handleConfirmDeleteExpense}
+        title="تأكيد مسح المصروف"
+        message={`هل أنت تأكد من مسح المصروف (${expenseToDelete?.description}) بقيمة ${Number(expenseToDelete?.amount).toFixed(2)} ج.م؟`}
+        confirmText="حذف المصروف"
+        cancelText="إلغاء"
+        isLoading={isDeletingExpense}
+        variant="danger"
+      />
     </div>
   );
 };

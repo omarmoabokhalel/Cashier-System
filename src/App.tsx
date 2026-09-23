@@ -119,7 +119,7 @@ export const App: React.FC = () => {
 
               {activeNav === 'sales' && (
                 <ProtectedRoute requiredPermission="create_sale">
-                  <SalesShell />
+                  <SalesShell onNavigate={(page) => setActiveNav(page)} />
                 </ProtectedRoute>
               )}
 

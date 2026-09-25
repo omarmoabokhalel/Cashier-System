@@ -56,14 +56,18 @@ export const NewProductCardModal: React.FC<NewProductCardModalProps> = ({
         .order('full_name');
 
       if (!error && data && data.length > 0) {
-        setSellers(data);
-        const currentUserProfile = data.find((s) => s.full_name === user?.fullName);
+        const sellersList: SellerProfile[] = data.map((s: any) => ({
+          id: String(s.id),
+          full_name: String(s.full_name || 'بائع'),
+        }));
+        setSellers(sellersList);
+        const currentUserProfile = sellersList.find((s) => s.full_name === user?.fullName);
         if (currentUserProfile) {
           setSelectedSellerId(currentUserProfile.id);
           setSelectedSellerName(currentUserProfile.full_name);
         } else {
-          setSelectedSellerId(data[0].id);
-          setSelectedSellerName(data[0].full_name);
+          setSelectedSellerId(sellersList[0].id);
+          setSelectedSellerName(sellersList[0].full_name);
         }
       } else {
         const defaultName = user?.fullName || 'الكاشير الرئيسي';

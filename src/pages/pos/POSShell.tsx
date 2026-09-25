@@ -13,7 +13,7 @@ import { HeldSalesModal } from '../../components/pos/HeldSalesModal';
 import { ItemDiscountModal } from '../../components/pos/ItemDiscountModal';
 import { ReceiptPrintModal } from '../../components/pos/ReceiptPrintModal';
 import { KeyboardShortcutsBar } from '../../components/pos/KeyboardShortcutsBar';
-import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
+import { reconcileShiftTotals, fetchLastShiftBalance } from '../../utils/shiftReconciliation';
 import {
   Search,
   Barcode,
@@ -673,12 +673,13 @@ export const POSShell: React.FC = () => {
         const defaultRegisterId = '00000000-0000-0000-0000-000000000001';
         const defaultCashierId = isValidUuid(user?.id) ? user!.id : '00000000-0000-0000-0000-000000000001';
 
+        const carryoverBalance = await fetchLastShiftBalance();
         const { data: newShift } = await (supabase.from('cashier_shifts') as any)
           .insert({
             branch_id: defaultBranchId,
             cash_register_id: defaultRegisterId,
             cashier_id: defaultCashierId,
-            opening_balance: 0,
+            opening_balance: carryoverBalance,
             status: 'open',
             opened_at: new Date().toISOString(),
           })

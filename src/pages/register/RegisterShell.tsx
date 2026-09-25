@@ -6,7 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Dialog } from '../../components/ui/Dialog';
 import { useToast } from '../../components/ui/Toast';
-import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
+import { reconcileShiftTotals, fetchLastShiftBalance } from '../../utils/shiftReconciliation';
 import {
   Landmark,
   PlusCircle,
@@ -304,21 +304,8 @@ export const RegisterShell: React.FC = () => {
 
   const handleOpenNewShiftModalClick = async () => {
     try {
-      const { data: lastShiftData } = await (supabase.from('cashier_shifts') as any)
-        .select('closing_balance_counted, expected_closing_balance')
-        .eq('status', 'closed')
-        .order('closed_at', { ascending: false })
-        .limit(1);
-
-      if (lastShiftData && lastShiftData.length > 0) {
-        const last = lastShiftData[0];
-        const prevBal = last.closing_balance_counted !== null && last.closing_balance_counted !== undefined
-          ? String(last.closing_balance_counted)
-          : String(last.expected_closing_balance || 0);
-        setOpeningBalance(prevBal);
-      } else {
-        setOpeningBalance('0');
-      }
+      const carryover = await fetchLastShiftBalance();
+      setOpeningBalance(String(carryover));
     } catch (e) {
       console.error(e);
       setOpeningBalance('0');
@@ -336,11 +323,16 @@ export const RegisterShell: React.FC = () => {
       const defaultRegisterId = '00000000-0000-0000-0000-000000000001';
       const defaultCashierId = isValidUuid(user?.id) ? user!.id : '00000000-0000-0000-0000-000000000001';
 
+      let parsedOpening = parseFloat(openingBalance);
+      if (isNaN(parsedOpening)) {
+        parsedOpening = await fetchLastShiftBalance();
+      }
+
       const { error } = await (supabase.from('cashier_shifts') as any).insert({
         branch_id: defaultBranchId,
         cash_register_id: defaultRegisterId,
         cashier_id: defaultCashierId,
-        opening_balance: parseFloat(openingBalance) || 0,
+        opening_balance: parsedOpening,
         status: 'open',
         opened_at: new Date().toISOString(),
       });

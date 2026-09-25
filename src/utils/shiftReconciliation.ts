@@ -145,3 +145,41 @@ export async function reconcileShiftTotals(shiftId: string): Promise<ReconciledS
     return null;
   }
 }
+
+/**
+ * Fetches the exact closing cash balance from the last cashier shift
+ * so that register cash accumulates continuously without resetting to 0.
+ */
+export async function fetchLastShiftBalance(): Promise<number> {
+  try {
+    const { data: shifts } = await (supabase.from('cashier_shifts') as any)
+      .select('id, opening_balance, total_sales_cash, total_cash_in, total_returns_cash, total_cash_out, total_expenses, closing_balance_counted, expected_closing_balance, status')
+      .order('opened_at', { ascending: false })
+      .limit(1);
+
+    if (shifts && shifts.length > 0) {
+      const s = shifts[0];
+      const calcBalance = Math.max(0,
+        Number(s.opening_balance || 0) +
+        Number(s.total_sales_cash || 0) +
+        Number(s.total_cash_in || 0) -
+        Number(s.total_returns_cash || 0) -
+        Number(s.total_cash_out || 0) -
+        Number(s.total_expenses || 0)
+      );
+
+      if (s.status === 'closed') {
+        if (s.closing_balance_counted !== null && s.closing_balance_counted !== undefined && Number(s.closing_balance_counted) > 0) {
+          return Number(s.closing_balance_counted);
+        }
+        if (s.expected_closing_balance !== null && s.expected_closing_balance !== undefined && Number(s.expected_closing_balance) > 0) {
+          return Number(s.expected_closing_balance);
+        }
+      }
+      return calcBalance;
+    }
+  } catch (err) {
+    console.error('Error fetching last shift balance:', err);
+  }
+  return 0;
+}

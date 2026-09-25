@@ -26,6 +26,8 @@ import {
   Check,
 } from 'lucide-react';
 
+import { useAuthStore } from '../../store/useAuthStore';
+
 interface ReturnItemForm {
   saleItemId: string;
   variantId: string;
@@ -40,6 +42,7 @@ interface ReturnItemForm {
 }
 
 export const ReturnsShell: React.FC = () => {
+  const { user } = useAuthStore();
   const { showToast } = useToast();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -124,8 +127,16 @@ export const ReturnsShell: React.FC = () => {
           .order('created_at', { ascending: false })
           .limit(6);
 
-        if (data && data.length > 0) {
-          setSuggestions(data);
+        let filteredSuggestions = data || [];
+        if (user?.roleCode === 'cashier') {
+          filteredSuggestions = filteredSuggestions.filter((s: any) => {
+            if (s.notes && (s.notes.includes('role:owner') || s.notes.includes('role:admin'))) return false;
+            return true;
+          });
+        }
+
+        if (filteredSuggestions && filteredSuggestions.length > 0) {
+          setSuggestions(filteredSuggestions);
           setShowSuggestions(true);
         } else {
           setSuggestions([]);
@@ -155,7 +166,7 @@ export const ReturnsShell: React.FC = () => {
       const { data, error } = await supabase
         .from('sales')
         .select(`
-          id, invoice_number, subtotal, tax_amount, total_amount, paid_amount, created_at,
+          id, invoice_number, subtotal, tax_amount, total_amount, paid_amount, created_at, notes,
           customers(full_name, phone),
           sale_items(
             id, variant_id, quantity, returned_quantity, unit_price, cost_price, discount_amount, total_price,
@@ -171,14 +182,22 @@ export const ReturnsShell: React.FC = () => {
         .order('created_at', { ascending: false })
         .limit(10);
 
+      let filteredData = data || [];
+      if (user?.roleCode === 'cashier') {
+        filteredData = filteredData.filter((s: any) => {
+          if (s.notes && (s.notes.includes('role:owner') || s.notes.includes('role:admin'))) return false;
+          return true;
+        });
+      }
+
       if (error) {
         showToast('error', 'فشل البحث', error.message);
-      } else if (!data || data.length === 0) {
+      } else if (!filteredData || filteredData.length === 0) {
         showToast('warning', 'غير موجود', 'لم يتم العثور على فاتورة مطابقة لرقم البحث');
       } else {
-        setSalesList(data);
-        if (data.length === 1) {
-          selectSale(data[0]);
+        setSalesList(filteredData);
+        if (filteredData.length === 1) {
+          selectSale(filteredData[0]);
         }
       }
     } catch (e: any) {

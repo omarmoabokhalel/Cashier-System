@@ -81,19 +81,41 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
     loadCashierActivities();
   }, [user]);
 
+  const isOwnerOrAdminCreated = (s: any) => {
+    if (!s) return false;
+    if (s.notes && (s.notes.includes('role:owner') || s.notes.includes('role:admin'))) return true;
+    if (s.notes && s.notes.includes('seller:')) {
+      const match = s.notes.match(/seller:([^|]+)/);
+      if (match && match[1]) {
+        const seller = match[1].trim();
+        if (
+          seller === 'المالك / المدير' ||
+          seller === 'المدير' ||
+          seller.includes('Admin') ||
+          seller.includes('المالك') ||
+          seller === (localStorage.getItem('admin_display_name') || 'المالك / المدير')
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   // Load Recent Operations & Activities Log
-  const loadCashierActivities = async () => {
+  const loadCashierActivities = async (shiftParam?: any) => {
     try {
-      // 1. Fetch Sales
+      const shiftToUse = shiftParam !== undefined ? shiftParam : activeShift;
+
+      // 1. Fetch Sales (Without referencing non-existent cashier_id column)
       let salesQuery = supabase
         .from('sales')
-        .select('id, invoice_number, total_amount, created_at, notes, cashier_id')
+        .select('id, invoice_number, total_amount, created_at, notes, cashier_shift_id')
         .order('created_at', { ascending: false })
         .limit(10);
 
-      // If user is cashier, filter by cashier id or notes
-      if (isCashierRole && user?.id) {
-        salesQuery = salesQuery.or(`cashier_id.eq.${user.id},notes.ilike.%${user.fullName}%`);
+      if (shiftToUse) {
+        salesQuery = salesQuery.eq('cashier_shift_id', shiftToUse.id);
       }
 
       // 2. Fetch Expenses
@@ -103,12 +125,20 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         .order('created_at', { ascending: false })
         .limit(10);
 
+      if (shiftToUse) {
+        expQuery = expQuery.gte('created_at', shiftToUse.opened_at);
+      }
+
       // 3. Fetch Returns
       let returnsQuery = supabase
         .from('sale_returns')
         .select('id, return_number, refund_amount, reason, created_at')
         .order('created_at', { ascending: false })
         .limit(10);
+
+      if (shiftToUse) {
+        returnsQuery = returnsQuery.eq('cashier_shift_id', shiftToUse.id);
+      }
 
       // 4. Fetch Profiles map for performer names
       const { data: profilesData } = await supabase.from('profiles').select('id, full_name');
@@ -122,16 +152,20 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
       const items: CashierActivityItem[] = [];
 
       (salesRes.data || []).forEach((s: any) => {
-        let performerName = s.cashier_id ? profileMap[s.cashier_id] : null;
-        if (!performerName) {
-          if (s.notes && s.notes.includes('role:owner')) performerName = 'المالك / المدير';
-          else performerName = user?.fullName || 'الكاشير الحالي';
+        // Role isolation: Cashier must NEVER see activities created by Admin/Owner
+        if (isCashierRole && isOwnerOrAdminCreated(s)) return;
+
+        let performerName = user?.fullName || 'الكاشير الحالي';
+        if (s.notes && s.notes.includes('role:owner')) performerName = 'المالك / المدير';
+        else if (s.notes && s.notes.includes('seller:')) {
+          const match = s.notes.match(/seller:([^|]+)/);
+          if (match && match[1]) performerName = match[1].trim();
         }
 
         items.push({
           id: `sale-${s.id}`,
           type: 'sale',
-          title: `فاتورة مبيعات جديده #${s.invoice_number}`,
+          title: `فاتورة مبيعات جديدة #${s.invoice_number}`,
           subtitle: s.notes || 'إصدار كاشير POS',
           amount: Number(s.total_amount || 0),
           performer: performerName,
@@ -182,39 +216,89 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
       const currentShift = openShiftData && openShiftData.length > 0 ? openShiftData[0] : null;
       setActiveShift(currentShift);
+      loadCashierActivities(currentShift);
 
       if (currentShift) {
         // Reconcile shift totals to ensure returns and expenses are perfectly synced
-        await reconcileShiftTotals(currentShift.id);
+        try {
+          await reconcileShiftTotals(currentShift.id);
+        } catch (e) {
+          console.error('Reconciliation warning:', e);
+        }
       }
 
-      // 2. Fetch Sales for the active shift (or current cashier)
-      let salesQuery = supabase
+      // 2. Fetch Sales - First try full relational query without invalid columns
+      let salesList: any[] = [];
+      const primaryQuery = supabase
         .from('sales')
         .select(`
-          id, total_amount, subtotal, discount_amount, created_at, cashier_id, notes,
+          id, invoice_number, total_amount, subtotal, discount_amount, created_at, notes, cashier_shift_id,
           sale_items(
             quantity, returned_quantity, unit_price, cost_price, total_price,
             product_variants(products(name_ar, categories(name_ar)))
           ),
           payments(payment_method, amount)
-        `);
+        `)
+        .order('created_at', { ascending: false });
+
+      const { data: primaryData, error: primaryErr } = await primaryQuery;
+
+      if (!primaryErr && primaryData) {
+        salesList = primaryData;
+      } else {
+        console.warn('Primary sales query failed or returned error, attempting fallback:', primaryErr);
+        // Fallback query without nested products/categories join
+        const fallbackQuery = supabase
+          .from('sales')
+          .select(`
+            id, invoice_number, total_amount, subtotal, discount_amount, created_at, notes, cashier_shift_id,
+            sale_items(quantity, returned_quantity, unit_price, cost_price, total_price),
+            payments(payment_method, amount)
+          `)
+          .order('created_at', { ascending: false });
+
+        const { data: fallbackData, error: fallbackErr } = await fallbackQuery;
+
+        if (!fallbackErr && fallbackData) {
+          salesList = fallbackData;
+        } else {
+          console.warn('Fallback sales query failed, attempting basic sales fetch:', fallbackErr);
+          const basicQuery = supabase
+            .from('sales')
+            .select('id, invoice_number, total_amount, subtotal, discount_amount, created_at, notes, cashier_shift_id')
+            .order('created_at', { ascending: false });
+          const { data: basicData } = await basicQuery;
+          salesList = basicData || [];
+        }
+      }
+
+      // Role isolation: Cashier must NEVER see invoices created by Owner/Admin
+      if (isCashierRole) {
+        salesList = salesList.filter((s) => !isOwnerOrAdminCreated(s));
+      }
+
+      // Filter sales strictly by active shift if shift is open, or today's sales if no shift open
+      let filteredSales: any[] = [];
+      const todayStr = new Date().toISOString().split('T')[0];
+      const monthStr = todayStr.substring(0, 7);
 
       if (currentShift) {
-        salesQuery = salesQuery.eq('cashier_shift_id', currentShift.id);
+        filteredSales = salesList.filter((s) => s.cashier_shift_id === currentShift.id);
+      } else {
+        filteredSales = salesList.filter((s) => s.created_at && s.created_at.startsWith(todayStr));
       }
 
-      // Requirement 4: If Cashier Role, filter sales by current cashier specifically!
-      if (isCashierRole && user?.id) {
-        salesQuery = salesQuery.or(`cashier_id.eq.${user.id},notes.ilike.%${user.fullName}%`);
-      }
+      // Calculate Total Sales today vs total month vs active shift
+      const salesTodayAmt = salesList
+        .filter((s) => s.created_at && s.created_at.startsWith(todayStr))
+        .reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
 
-      const { data: shiftSales } = await salesQuery;
-      const salesList: any[] = shiftSales || [];
+      const salesMonthAmt = salesList
+        .filter((s) => s.created_at && s.created_at.startsWith(monthStr))
+        .reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
 
-      // Calculate Total Sales
-      const totalSalesAmt = salesList.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
-      const invoicesCount = salesList.length;
+      const totalSalesAmt = filteredSales.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
+      const invoicesCount = filteredSales.length;
       const avgInv = invoicesCount > 0 ? totalSalesAmt / invoicesCount : 0;
 
       // Calculate COGS (Net COGS after deducting returned items quantity)
@@ -223,7 +307,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
       const paymentMap: Record<string, number> = {};
       const catMap: Record<string, number> = {};
 
-      salesList.forEach((s) => {
+      filteredSales.forEach((s) => {
         (s.sale_items || []).forEach((item: any) => {
           const netQty = Math.max(0, (item.quantity || 0) - (item.returned_quantity || 0));
           netCogs += Number(item.cost_price || 0) * netQty;
@@ -234,7 +318,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           topProdMap[pName].total_revenue += Number(item.unit_price || 0) * netQty;
 
           const cName = item.product_variants?.products?.categories?.name_ar || 'عام';
-          catMap[cName] = (catMap[cName] || 0) + (Number(item.unit_price || 0) * netQty);
+          catMap[cName] = (catMap[cName] || 0) + Number(item.unit_price || 0) * netQty;
         });
 
         (s.payments || []).forEach((p: any) => {
@@ -243,23 +327,37 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         });
       });
 
-      // Fetch Returns for shift
-      let returnsTotalAmt = 0;
-      if (currentShift) {
-        try {
-          const { data: retData } = await (supabase.from('sale_returns') as any)
-            .select('refund_amount')
-            .eq('cashier_shift_id', currentShift.id);
-          returnsTotalAmt = (retData || []).reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
-        } catch (e) {
-          returnsTotalAmt = Number(currentShift.total_returns_cash || 0);
-        }
+      // If no payments explicitly found from relation, default paymentMap from totalSalesAmt
+      if (Object.keys(paymentMap).length === 0 && totalSalesAmt > 0) {
+        paymentMap['cash'] = totalSalesAmt;
       }
 
-      // Fetch Expenses for shift
-      const expensesTotalAmt = currentShift ? Number(currentShift.total_expenses || 0) : 0;
+      // Fetch Returns
+      let returnsTotalAmt = 0;
+      try {
+        let retQuery = supabase.from('sale_returns').select('refund_amount');
+        if (currentShift) {
+          retQuery = retQuery.eq('cashier_shift_id', currentShift.id);
+        }
+        const { data: retData } = await (retQuery as any);
+        returnsTotalAmt = (retData || []).reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+      } catch (e) {
+        if (currentShift) returnsTotalAmt = Number(currentShift.total_returns_cash || 0);
+      }
 
-      // Requirement 2 Fix: Net Sales & Net Profit calculation correctly accounting for Returns!
+      // Fetch Expenses
+      let expensesTotalAmt = 0;
+      try {
+        let expQuery = supabase.from('expenses').select('amount');
+        if (currentShift) {
+          expQuery = expQuery.gte('created_at', currentShift.opened_at);
+        }
+        const { data: expData } = await (expQuery as any);
+        expensesTotalAmt = (expData || []).reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+      } catch (e) {
+        if (currentShift) expensesTotalAmt = Number(currentShift.total_expenses || 0);
+      }
+
       const netSales = Math.max(0, totalSalesAmt - returnsTotalAmt);
       const grossProfit = Math.max(0, netSales - netCogs);
       const netProfit = grossProfit - expensesTotalAmt;
@@ -281,7 +379,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
       setMetrics({
         sales_today: totalSalesAmt,
-        sales_month: totalSalesAmt,
+        sales_month: salesMonthAmt,
         invoices_count: invoicesCount,
         avg_invoice: avgInv,
         cogs: netCogs,

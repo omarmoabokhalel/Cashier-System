@@ -438,6 +438,8 @@ async function fetchUserProfile(userId: string, email: string): Promise<UserProf
   };
 }
 
+import { fetchLastShiftBalance, reconcileShiftTotals } from '../utils/shiftReconciliation';
+
 async function ensureOpenShiftOnLogin(cashierId: string) {
   try {
     const isValidUuid = (id?: string) => !!id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -450,12 +452,14 @@ async function ensureOpenShiftOnLogin(cashierId: string) {
       .limit(1);
 
     if (!openShifts || openShifts.length === 0) {
-      // Auto open shift for user
+      // Carry over previous shift's closing cash balance so cash in register NEVER resets to 0
+      const carryoverBalance = await fetchLastShiftBalance();
+
       await (supabase.from('cashier_shifts') as any).insert({
         branch_id: '00000000-0000-0000-0000-000000000001',
         cash_register_id: '00000000-0000-0000-0000-000000000001',
         cashier_id: validCashierId,
-        opening_balance: 0,
+        opening_balance: carryoverBalance,
         status: 'open',
         opened_at: new Date().toISOString(),
       });
@@ -468,16 +472,35 @@ async function ensureOpenShiftOnLogin(cashierId: string) {
 async function autoCloseShiftOnLogout() {
   try {
     const { data: openShifts } = await (supabase.from('cashier_shifts') as any)
-      .select('id')
+      .select('*')
       .eq('status', 'open');
 
     if (openShifts && openShifts.length > 0) {
       for (const s of openShifts) {
+        // Reconcile live totals first
+        await reconcileShiftTotals(s.id);
+
+        const { data: updatedShift } = await (supabase.from('cashier_shifts') as any)
+          .select('*')
+          .eq('id', s.id)
+          .single();
+
+        const shiftRec = updatedShift || s;
+        const expectedCash = Math.max(0,
+          Number(shiftRec.opening_balance || 0) +
+          Number(shiftRec.total_sales_cash || 0) +
+          Number(shiftRec.total_cash_in || 0) -
+          Number(shiftRec.total_returns_cash || 0) -
+          Number(shiftRec.total_cash_out || 0) -
+          Number(shiftRec.total_expenses || 0)
+        );
+
         await (supabase.from('cashier_shifts') as any)
           .update({
             status: 'closed',
             closed_at: new Date().toISOString(),
-            closing_balance_counted: 0,
+            closing_balance_counted: expectedCash,
+            expected_closing_balance: expectedCash,
             notes: 'إغلاق تلقائي عند تسجيل الخروج',
           })
           .eq('id', s.id);

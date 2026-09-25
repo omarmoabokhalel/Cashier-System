@@ -24,6 +24,7 @@ import {
   CreditCard,
   Banknote,
   User,
+  UserPlus,
   Tag,
   Camera,
   PauseCircle,
@@ -83,7 +84,77 @@ export const POSShell: React.FC = () => {
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'split'>('cash');
   const [paidCashAmount, setPaidCashAmount] = useState<string>('');
   const [sellerName, setSellerName] = useState<string>('');
+  const [sellersList, setSellersList] = useState<string[]>([]);
+  const [isAddSellerModalOpen, setIsAddSellerModalOpen] = useState(false);
+  const [newSellerInput, setNewSellerInput] = useState('');
   const [isProcessingSale, setIsProcessingSale] = useState(false);
+
+  const loadSellersList = async () => {
+    try {
+      const defaultName = user?.fullName || localStorage.getItem('admin_display_name') || 'المالك / البائع';
+      let customSellers: string[] = [];
+      try {
+        const saved = localStorage.getItem('custom_sellers_list');
+        if (saved) {
+          customSellers = JSON.parse(saved);
+        }
+      } catch (e) {
+        console.error('Failed to parse custom_sellers_list', e);
+      }
+
+      let profileNames: string[] = [];
+      try {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('full_name')
+          .eq('is_active', true);
+        if (profiles && profiles.length > 0) {
+          profileNames = profiles.map((p: any) => p.full_name).filter(Boolean);
+        }
+      } catch (e) {
+        console.error('Failed to fetch profiles for sellers list', e);
+      }
+
+      const merged = Array.from(new Set([
+        defaultName,
+        'أحمد الكاشير',
+        ...customSellers,
+        ...profileNames,
+      ].map(s => s?.trim()).filter((name): name is string => Boolean(name))));
+
+      setSellersList(merged);
+
+      if (!sellerName && merged.length > 0) {
+        setSellerName(merged[0]);
+      }
+    } catch (err) {
+      console.error('Error loading sellers list:', err);
+    }
+  };
+
+  const handleAddSeller = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = newSellerInput.trim();
+    if (!trimmed) {
+      showToast('warning', 'اسم البائع مطلوب', 'يرجى إدخال اسم البائع أولاً');
+      return;
+    }
+
+    const updated = Array.from(new Set([...sellersList, trimmed]));
+    setSellersList(updated);
+
+    try {
+      const customOnly = updated.filter(n => n !== 'المالك / البائع' && n !== 'أحمد الكاشير');
+      localStorage.setItem('custom_sellers_list', JSON.stringify(customOnly));
+    } catch (e) {
+      console.error('Failed to save custom_sellers_list', e);
+    }
+
+    setSellerName(trimmed);
+    setNewSellerInput('');
+    setIsAddSellerModalOpen(false);
+    showToast('success', 'تم إضافة البائع', `تمت إضافة وتحديد البائع "${trimmed}" بنجاح`);
+  };
 
   useEffect(() => {
     if (user?.fullName) {
@@ -92,6 +163,7 @@ export const POSShell: React.FC = () => {
       const saved = localStorage.getItem('admin_display_name') || 'المالك / البائع';
       setSellerName(saved);
     }
+    loadSellersList();
   }, [user]);
 
   // State: Receipt Printing
@@ -119,6 +191,7 @@ export const POSShell: React.FC = () => {
   useEffect(() => {
     checkActiveShift();
     loadPOSSettings();
+    loadSellersList();
   }, []);
 
   const loadPOSSettings = async () => {
@@ -1113,20 +1186,55 @@ export const POSShell: React.FC = () => {
         maxWidth="md"
       >
         <div className="space-y-4 font-sans" dir="rtl">
-          {/* Seller Name Selection / Input (Defaulted & Editable) */}
-          <div className="p-3 bg-indigo-950/40 border border-indigo-500/40 rounded-2xl space-y-1.5">
-            <label className="block text-xs font-bold text-indigo-300 flex items-center gap-1.5">
-              <User className="w-4 h-4 text-indigo-400" />
-              <span>اسم البائع / مسؤول الفاتورة * (مكتوب تلقائياً وتستطيع تعديله)</span>
-            </label>
-            <Input
-              type="text"
-              placeholder="أدخل اسم البائع..."
-              value={sellerName}
-              onChange={(e) => setSellerName(e.target.value)}
-              required
-              className="bg-slate-950 border-indigo-500/50 text-white font-bold text-sm"
-            />
+          {/* Seller Name Selection & Addition */}
+          <div className="p-3 bg-indigo-950/40 border border-indigo-500/40 rounded-2xl space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                <User className="w-4 h-4 text-indigo-400" />
+                <span>اسم البائع / مسؤول الفاتورة *</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => setIsAddSellerModalOpen(true)}
+                className="text-xs font-bold text-indigo-300 hover:text-white flex items-center gap-1.5 bg-indigo-900/60 hover:bg-indigo-800/80 border border-indigo-500/40 px-2.5 py-1 rounded-xl transition-all shadow-sm"
+              >
+                <UserPlus className="w-3.5 h-3.5 text-indigo-400" />
+                <span>+ إضافة اسم بائع</span>
+              </button>
+            </div>
+
+            <div className="relative">
+              <select
+                value={sellersList.includes(sellerName) ? sellerName : sellerName ? 'custom_current' : ''}
+                onChange={(e) => {
+                  if (e.target.value === '__add_new__') {
+                    setIsAddSellerModalOpen(true);
+                  } else {
+                    setSellerName(e.target.value);
+                  }
+                }}
+                className="w-full bg-slate-950 border border-indigo-500/50 text-white font-bold text-sm rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-sans cursor-pointer"
+              >
+                {!sellerName && (
+                  <option value="" disabled className="bg-slate-900 text-slate-400">
+                    -- اختر اسم البائع --
+                  </option>
+                )}
+                {sellerName && !sellersList.includes(sellerName) && (
+                  <option value="custom_current" className="bg-slate-900 text-white font-medium">
+                    {sellerName}
+                  </option>
+                )}
+                {sellersList.map((name) => (
+                  <option key={name} value={name} className="bg-slate-900 text-white font-medium py-1">
+                    {name}
+                  </option>
+                ))}
+                <option value="__add_new__" className="bg-indigo-950 text-indigo-300 font-bold py-1">
+                  ➕ إضافة اسم بائع جديد...
+                </option>
+              </select>
+            </div>
           </div>
 
           {/* Invoice Discount Section */}
@@ -1423,6 +1531,62 @@ export const POSShell: React.FC = () => {
             </Button>
             <Button type="submit" isLoading={isOpeningShift} variant="primary" className="bg-emerald-600 hover:bg-emerald-500 font-bold">
               تأكيد فتح الوردية
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* ADD NEW SELLER MODAL */}
+      <Dialog
+        isOpen={isAddSellerModalOpen}
+        onClose={() => setIsAddSellerModalOpen(false)}
+        title="إضافة اسم بائع جديد"
+        maxWidth="sm"
+      >
+        <form onSubmit={handleAddSeller} className="space-y-4 font-sans" dir="rtl">
+          <div className="p-3 bg-indigo-950/40 border border-indigo-500/30 rounded-xl text-indigo-200 text-xs space-y-1">
+            <div className="flex items-center gap-1.5 font-bold text-indigo-300">
+              <UserPlus className="w-4 h-4 text-indigo-400" />
+              <span>إضافة بائع جديد لقائمة البائعين</span>
+            </div>
+            <p className="text-[11px] text-slate-300">
+              سيتم إضافة البائع للقائمة واختياره تلقائياً لإصدار الفاتورة الحالية والفواتير القادمة.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+              اسم البائع الجديد *
+            </label>
+            <Input
+              type="text"
+              placeholder="مثال: أحمد الكاشير / محمد المبيعات..."
+              value={newSellerInput}
+              onChange={(e) => setNewSellerInput(e.target.value)}
+              required
+              autoFocus
+              className="bg-slate-950 border-indigo-500/50 text-white font-bold"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={() => {
+                setNewSellerInput('');
+                setIsAddSellerModalOpen(false);
+              }}
+            >
+              إلغاء
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              className="bg-indigo-600 hover:bg-indigo-500 font-bold flex items-center gap-1.5"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>إضافة البائع وتحديده</span>
             </Button>
           </div>
         </form>

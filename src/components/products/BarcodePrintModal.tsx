@@ -185,9 +185,9 @@ const StickerLabel: React.FC<{ item: LabelItem; dims: Dims }> = ({ item, dims })
     style={{ width: `${dims.widthMm}mm`, height: `${dims.heightMm}mm` }}
     className="barcode-sticker border border-black p-1 bg-white flex flex-col justify-between items-stretch text-center overflow-hidden select-none"
   >
-    <div className="flex items-center justify-between text-[7px] font-bold text-black leading-none">
-      <span className="truncate max-w-[60%]">{item.prodName}</span>
-      <span className="truncate max-w-[35%]">{item.specLabel || ''}</span>
+    <div className="flex items-center justify-between text-[9px] font-bold text-black leading-none">
+      <span className=" max-w-[70%]">{item.prodName}</span>
+   
     </div>
 
     <BarcodeSVG code={item.barcodeCode} />
@@ -196,7 +196,7 @@ const StickerLabel: React.FC<{ item: LabelItem; dims: Dims }> = ({ item, dims })
     </span>
 
     <div className="flex items-center justify-between border-t border-black pt-0.5 mt-0.5">
-      <span className="font-mono text-[7px] text-black truncate max-w-[45%]">SKU:{item.sku}</span>
+      <span className="font-mono text-[10px] text-black truncate max-w-[45%]">SKU:{item.sku}</span>
       <span className="font-mono font-black text-black text-[12px] leading-none">{item.price} ج.م</span>
     </div>
   </div>

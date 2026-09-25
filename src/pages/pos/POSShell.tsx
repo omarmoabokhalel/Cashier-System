@@ -246,6 +246,20 @@ export const POSShell: React.FC = () => {
         setActiveShift(openShifts[0]);
       } else {
         setActiveShift(null);
+        try {
+          const { data: lastShift } = await (supabase.from('cashier_shifts') as any)
+            .select('closing_balance_counted, expected_closing_balance')
+            .eq('status', 'closed')
+            .order('closed_at', { ascending: false })
+            .limit(1);
+
+          if (lastShift && lastShift.length > 0) {
+            const bal = lastShift[0].closing_balance_counted !== null && lastShift[0].closing_balance_counted !== undefined
+              ? String(lastShift[0].closing_balance_counted)
+              : String(lastShift[0].expected_closing_balance || 0);
+            setOpeningBalance(bal);
+          }
+        } catch (err) {}
         setIsOpenShiftModalOpen(true);
       }
     } catch (e) {

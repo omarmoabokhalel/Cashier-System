@@ -302,6 +302,30 @@ export const RegisterShell: React.FC = () => {
     }
   };
 
+  const handleOpenNewShiftModalClick = async () => {
+    try {
+      const { data: lastShiftData } = await (supabase.from('cashier_shifts') as any)
+        .select('closing_balance_counted, expected_closing_balance')
+        .eq('status', 'closed')
+        .order('closed_at', { ascending: false })
+        .limit(1);
+
+      if (lastShiftData && lastShiftData.length > 0) {
+        const last = lastShiftData[0];
+        const prevBal = last.closing_balance_counted !== null && last.closing_balance_counted !== undefined
+          ? String(last.closing_balance_counted)
+          : String(last.expected_closing_balance || 0);
+        setOpeningBalance(prevBal);
+      } else {
+        setOpeningBalance('0');
+      }
+    } catch (e) {
+      console.error(e);
+      setOpeningBalance('0');
+    }
+    setIsOpenShiftModalOpen(true);
+  };
+
   // Handle Shift Opening
   const handleOpenNewShift = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -456,7 +480,7 @@ export const RegisterShell: React.FC = () => {
           </div>
         ) : (
           <Button
-            onClick={() => setIsOpenShiftModalOpen(true)}
+            onClick={handleOpenNewShiftModalClick}
             variant="primary"
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold gap-2 text-xs"
           >
@@ -583,7 +607,7 @@ export const RegisterShell: React.FC = () => {
             <p className="text-xs text-slate-400">ابدأ وردية جديدة للبدء في إجراء عمليات البيع والإيداع واستلام النقدية</p>
           </div>
           <Button
-            onClick={() => setIsOpenShiftModalOpen(true)}
+            onClick={handleOpenNewShiftModalClick}
             variant="primary"
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold gap-2 text-sm px-6 py-2.5 mx-auto"
           >

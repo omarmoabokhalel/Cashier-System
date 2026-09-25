@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
-import { Skeleton } from '../../components/ui/Skeleton';
 import { Badge } from '../../components/ui/Badge';
+import { reconcileShiftTotals } from '../../utils/shiftReconciliation';
 import {
   ShoppingCart,
   Package,
@@ -23,6 +23,7 @@ import {
   DollarSign,
   Layers,
   Activity,
+  UserCheck,
 } from 'lucide-react';
 
 import { useAuthStore } from '../../store/useAuthStore';
@@ -66,6 +67,8 @@ interface CashierActivityItem {
 
 export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const { user } = useAuthStore();
+  const isCashierRole = user?.roleCode === 'cashier';
+
   const [loading, setLoading] = useState(true);
   const [isOwnerView, setIsOwnerView] = useState(false);
   const [activeShift, setActiveShift] = useState<any | null>(null);
@@ -76,41 +79,60 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
   useEffect(() => {
     loadDashboardData();
     loadCashierActivities();
-  }, []);
+  }, [user]);
 
+  // Load Recent Operations & Activities Log
   const loadCashierActivities = async () => {
     try {
-      const [salesRes, expRes, returnsRes] = await Promise.all([
-        supabase
-          .from('sales')
-          .select('id, invoice_number, total_amount, created_at, notes, cashier:profiles!sales_cashier_id_fkey(full_name)')
-          .order('created_at', { ascending: false })
-          .limit(8),
-        supabase
-          .from('expenses')
-          .select('id, category, description, amount, payee, created_at')
-          .order('created_at', { ascending: false })
-          .limit(8),
-        supabase
-          .from('sales_returns')
-          .select('id, return_number, refund_amount, reason, created_at')
-          .order('created_at', { ascending: false })
-          .limit(8),
-      ]);
+      // 1. Fetch Sales
+      let salesQuery = supabase
+        .from('sales')
+        .select('id, invoice_number, total_amount, created_at, notes, cashier_id')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      // If user is cashier, filter by cashier id or notes
+      if (isCashierRole && user?.id) {
+        salesQuery = salesQuery.or(`cashier_id.eq.${user.id},notes.ilike.%${user.fullName}%`);
+      }
+
+      // 2. Fetch Expenses
+      let expQuery = supabase
+        .from('expenses')
+        .select('id, category, description, amount, payee, created_at')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      // 3. Fetch Returns
+      let returnsQuery = supabase
+        .from('sale_returns')
+        .select('id, return_number, refund_amount, reason, created_at')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      // 4. Fetch Profiles map for performer names
+      const { data: profilesData } = await supabase.from('profiles').select('id, full_name');
+      const profileMap: Record<string, string> = {};
+      (profilesData || []).forEach((p: any) => {
+        if (p.id && p.full_name) profileMap[p.id] = p.full_name;
+      });
+
+      const [salesRes, expRes, returnsRes] = await Promise.all([salesQuery, expQuery, returnsQuery]);
 
       const items: CashierActivityItem[] = [];
 
       (salesRes.data || []).forEach((s: any) => {
-        let performerName = s.cashier?.full_name;
+        let performerName = s.cashier_id ? profileMap[s.cashier_id] : null;
         if (!performerName) {
           if (s.notes && s.notes.includes('role:owner')) performerName = 'المالك / المدير';
-          else performerName = 'أحمد الكاشير';
+          else performerName = user?.fullName || 'الكاشير الحالي';
         }
+
         items.push({
           id: `sale-${s.id}`,
           type: 'sale',
-          title: `فاتورة مبيعات جديدة #${s.invoice_number}`,
-          subtitle: `تفاصيل: ${s.notes || 'إصدار كاشير POS'}`,
+          title: `فاتورة مبيعات جديده #${s.invoice_number}`,
+          subtitle: s.notes || 'إصدار كاشير POS',
           amount: Number(s.total_amount || 0),
           performer: performerName,
           timestamp: s.created_at,
@@ -124,7 +146,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           title: `مصروف تشغيلي: ${e.description || e.category}`,
           subtitle: `تصنيف: ${e.category}`,
           amount: Number(e.amount || 0),
-          performer: e.payee || 'الكاشير',
+          performer: e.payee || user?.fullName || 'الكاشير',
           timestamp: e.created_at,
         });
       });
@@ -136,7 +158,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           title: `مرتجع مبيعات #${r.return_number}`,
           subtitle: `سبب الإرجاع: ${r.reason || 'طلب العميل'}`,
           amount: Number(r.refund_amount || 0),
-          performer: 'الكاشير',
+          performer: user?.fullName || 'الكاشير',
           timestamp: r.created_at,
         });
       });
@@ -161,99 +183,124 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
       const currentShift = openShiftData && openShiftData.length > 0 ? openShiftData[0] : null;
       setActiveShift(currentShift);
 
-      // 2. Query shift analytics RPC
-      const [{ data: dbMetrics }, { data: dbOwner }] = await Promise.all([
-        (supabase.rpc as any)('rpc_get_dashboard_analytics', {
-          p_shift_id: currentShift?.id || null,
-        }),
-        (supabase.rpc as any)('rpc_get_executive_owner_metrics'),
-      ]);
-
-      if (dbMetrics) {
-        setMetrics(dbMetrics);
-      } else if (currentShift) {
-        // Fallback: Query sales for active shift directly
-        const { data: shiftSales } = await supabase
-          .from('sales')
-          .select(`
-            id, total_amount, subtotal, discount_amount, created_at,
-            sale_items(
-              quantity, returned_quantity, unit_price, cost_price, total_price,
-              product_variants(products(name_ar, categories(name_ar)))
-            ),
-            payments(payment_method, amount)
-          `)
-          .eq('cashier_shift_id', currentShift.id);
-
-        const salesList: any[] = shiftSales || [];
-        const totalSalesAmt = salesList.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
-        const invoicesCount = salesList.length;
-        const avgInv = invoicesCount > 0 ? totalSalesAmt / invoicesCount : 0;
-
-        let totalCogs = 0;
-        const topProdMap: Record<string, { total_sold: number; total_revenue: number }> = {};
-        const paymentMap: Record<string, number> = {};
-        const catMap: Record<string, number> = {};
-
-        salesList.forEach((s) => {
-          (s.sale_items || []).forEach((item: any) => {
-            const netQty = (item.quantity || 0) - (item.returned_quantity || 0);
-            totalCogs += Number(item.cost_price || 0) * netQty;
-            const pName = item.product_variants?.products?.name_ar || 'منتج';
-            if (!topProdMap[pName]) topProdMap[pName] = { total_sold: 0, total_revenue: 0 };
-            topProdMap[pName].total_sold += netQty;
-            topProdMap[pName].total_revenue += Number(item.total_price || 0);
-
-            const cName = item.product_variants?.products?.categories?.name_ar || 'عام';
-            catMap[cName] = (catMap[cName] || 0) + Number(item.total_price || 0);
-          });
-
-          (s.payments || []).forEach((p: any) => {
-            const pm = p.payment_method || 'cash';
-            paymentMap[pm] = (paymentMap[pm] || 0) + Number(p.amount || 0);
-          });
-        });
-
-        const grossProf = totalSalesAmt - totalCogs;
-        const retTot = Number(currentShift.total_returns_cash || 0);
-        const expTot = Number(currentShift.total_expenses || 0);
-        const netSal = totalSalesAmt - retTot;
-        const netProf = grossProf - expTot;
-
-        const topProducts = Object.entries(topProdMap)
-          .map(([product_name, val]) => ({ product_name, ...val }))
-          .sort((a, b) => b.total_sold - a.total_sold)
-          .slice(0, 5);
-
-        const salesByPayment = Object.entries(paymentMap).map(([payment_method, total_amount]) => ({
-          payment_method,
-          total_amount,
-        }));
-
-        const salesByCategory = Object.entries(catMap).map(([category_name, total_revenue]) => ({
-          category_name,
-          total_revenue,
-        }));
-
-        setMetrics({
-          sales_today: totalSalesAmt,
-          sales_month: totalSalesAmt,
-          invoices_count: invoicesCount,
-          avg_invoice: avgInv,
-          cogs: totalCogs,
-          gross_profit: grossProf,
-          returns_total: retTot,
-          expenses_total: expTot,
-          net_sales: netSal,
-          net_profit: netProf,
-          top_products: topProducts,
-          sales_by_category: salesByCategory,
-          sales_by_payment: salesByPayment,
-          daily_trend: [],
-        });
+      if (currentShift) {
+        // Reconcile shift totals to ensure returns and expenses are perfectly synced
+        await reconcileShiftTotals(currentShift.id);
       }
 
-      if (dbOwner) setOwnerMetrics(dbOwner);
+      // 2. Fetch Sales for the active shift (or current cashier)
+      let salesQuery = supabase
+        .from('sales')
+        .select(`
+          id, total_amount, subtotal, discount_amount, created_at, cashier_id, notes,
+          sale_items(
+            quantity, returned_quantity, unit_price, cost_price, total_price,
+            product_variants(products(name_ar, categories(name_ar)))
+          ),
+          payments(payment_method, amount)
+        `);
+
+      if (currentShift) {
+        salesQuery = salesQuery.eq('cashier_shift_id', currentShift.id);
+      }
+
+      // Requirement 4: If Cashier Role, filter sales by current cashier specifically!
+      if (isCashierRole && user?.id) {
+        salesQuery = salesQuery.or(`cashier_id.eq.${user.id},notes.ilike.%${user.fullName}%`);
+      }
+
+      const { data: shiftSales } = await salesQuery;
+      const salesList: any[] = shiftSales || [];
+
+      // Calculate Total Sales
+      const totalSalesAmt = salesList.reduce((sum, s) => sum + Number(s.total_amount || 0), 0);
+      const invoicesCount = salesList.length;
+      const avgInv = invoicesCount > 0 ? totalSalesAmt / invoicesCount : 0;
+
+      // Calculate COGS (Net COGS after deducting returned items quantity)
+      let netCogs = 0;
+      const topProdMap: Record<string, { total_sold: number; total_revenue: number }> = {};
+      const paymentMap: Record<string, number> = {};
+      const catMap: Record<string, number> = {};
+
+      salesList.forEach((s) => {
+        (s.sale_items || []).forEach((item: any) => {
+          const netQty = Math.max(0, (item.quantity || 0) - (item.returned_quantity || 0));
+          netCogs += Number(item.cost_price || 0) * netQty;
+
+          const pName = item.product_variants?.products?.name_ar || 'منتج';
+          if (!topProdMap[pName]) topProdMap[pName] = { total_sold: 0, total_revenue: 0 };
+          topProdMap[pName].total_sold += netQty;
+          topProdMap[pName].total_revenue += Number(item.unit_price || 0) * netQty;
+
+          const cName = item.product_variants?.products?.categories?.name_ar || 'عام';
+          catMap[cName] = (catMap[cName] || 0) + (Number(item.unit_price || 0) * netQty);
+        });
+
+        (s.payments || []).forEach((p: any) => {
+          const pm = p.payment_method || 'cash';
+          paymentMap[pm] = (paymentMap[pm] || 0) + Number(p.amount || 0);
+        });
+      });
+
+      // Fetch Returns for shift
+      let returnsTotalAmt = 0;
+      if (currentShift) {
+        try {
+          const { data: retData } = await (supabase.from('sale_returns') as any)
+            .select('refund_amount')
+            .eq('cashier_shift_id', currentShift.id);
+          returnsTotalAmt = (retData || []).reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+        } catch (e) {
+          returnsTotalAmt = Number(currentShift.total_returns_cash || 0);
+        }
+      }
+
+      // Fetch Expenses for shift
+      const expensesTotalAmt = currentShift ? Number(currentShift.total_expenses || 0) : 0;
+
+      // Requirement 2 Fix: Net Sales & Net Profit calculation correctly accounting for Returns!
+      const netSales = Math.max(0, totalSalesAmt - returnsTotalAmt);
+      const grossProfit = Math.max(0, netSales - netCogs);
+      const netProfit = grossProfit - expensesTotalAmt;
+
+      const topProducts = Object.entries(topProdMap)
+        .map(([product_name, val]) => ({ product_name, ...val }))
+        .sort((a, b) => b.total_sold - a.total_sold)
+        .slice(0, 5);
+
+      const salesByPayment = Object.entries(paymentMap).map(([payment_method, total_amount]) => ({
+        payment_method,
+        total_amount,
+      }));
+
+      const salesByCategory = Object.entries(catMap).map(([category_name, total_revenue]) => ({
+        category_name,
+        total_revenue,
+      }));
+
+      setMetrics({
+        sales_today: totalSalesAmt,
+        sales_month: totalSalesAmt,
+        invoices_count: invoicesCount,
+        avg_invoice: avgInv,
+        cogs: netCogs,
+        gross_profit: grossProfit,
+        returns_total: returnsTotalAmt,
+        expenses_total: expensesTotalAmt,
+        net_sales: netSales,
+        net_profit: netProfit,
+        top_products: topProducts,
+        sales_by_category: salesByCategory,
+        sales_by_payment: salesByPayment,
+        daily_trend: [],
+      });
+
+      // Owner executive metrics if available
+      try {
+        const { data: dbOwner } = await (supabase.rpc as any)('rpc_get_executive_owner_metrics');
+        if (dbOwner) setOwnerMetrics(dbOwner);
+      } catch (e) {}
     } catch (e) {
       console.error('Error loading dashboard metrics:', e);
     } finally {
@@ -263,11 +310,13 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
   return (
     <div className="p-6 space-y-6 font-sans select-none" dir="rtl">
-      {/* TOP HERO BANNER & OWNER VIEW TOGGLE */}
+      {/* TOP HERO BANNER & ROLE INDICATOR */}
       <div className="bg-gradient-to-r from-indigo-950 via-purple-950 to-slate-950 border border-indigo-800/60 rounded-3xl p-6 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h2 className="text-xl font-bold text-white">لوحة مؤشرات الوردية الحالية</h2>
+            <h2 className="text-xl font-bold text-white">
+              {isCashierRole ? `مؤشرات مبيعات الكاشير الشخصية (${user?.fullName || 'الكاشير'})` : 'لوحة مؤشرات الوردية الحالية'}
+            </h2>
             {activeShift ? (
               <Badge variant="success" size="sm" className="bg-emerald-950 border border-emerald-700 text-emerald-300">
                 الوردية مفتوحة (منذ {new Date(activeShift.opened_at).toLocaleTimeString('ar-EG')})
@@ -279,7 +328,9 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
             )}
           </div>
           <p className="text-xs text-indigo-200/80 max-w-lg">
-            عرض مؤشرات المبيعات، الفواتير والأرباح المحسوبة حصرياً للوردية الحالية النشطة.
+            {isCashierRole
+              ? 'تستعرض الشاشة مبيعاتك وفواتيرك وأرباحك الخاصة بك حصرياً في هذه الوردية.'
+              : 'عرض مؤشرات المبيعات، الفواتير والأرباح المحسوبة حصرياً للوردية الحالية النشطة.'}
           </p>
         </div>
 
@@ -309,12 +360,25 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         </div>
       </div>
 
+      {/* CASHIER ROLE INDICATOR BANNER */}
+      {isCashierRole && (
+        <div className="bg-gradient-to-r from-emerald-950/80 via-slate-900 to-indigo-950/80 border border-emerald-500/40 p-3.5 rounded-2xl flex items-center gap-3 text-xs text-emerald-200">
+          <UserCheck className="w-5 h-5 text-emerald-400 shrink-0" />
+          <div>
+            <span className="font-bold block">مرحباً بك {user?.fullName}!</span>
+            <span className="text-[11px] text-slate-300">
+              تعرض هذه الشاشة مبيعاتك الشخصية وفواتيرك وأنشطتك الحالية فقط دون باقي الموظفين.
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* 9 MAIN SHIFT METRIC CARDS */}
       {metrics ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>مبيعات الوردية الحالية</span>
+              <span>{isCashierRole ? 'مبيعاتك اليوم' : 'مبيعات الوردية الحالية'}</span>
               <TrendingUp className="w-4 h-4 text-emerald-400" />
             </span>
             <span className="text-lg font-black text-emerald-400 font-mono">
@@ -324,7 +388,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>مبيعات الشهر الكلية</span>
+              <span>إجمالي المبيعات</span>
               <Calendar className="w-4 h-4 text-indigo-400" />
             </span>
             <span className="text-lg font-black text-indigo-400 font-mono">
@@ -334,7 +398,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>فواتير الوردية</span>
+              <span>{isCashierRole ? 'فواتيرك الصادرة' : 'فواتير الوردية'}</span>
               <ShoppingCart className="w-4 h-4 text-sky-400" />
             </span>
             <span className="text-lg font-black text-white font-mono">
@@ -344,7 +408,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>متوسط فاتورة الوردية</span>
+              <span>متوسط قيمة الفاتورة</span>
               <DollarSign className="w-4 h-4 text-purple-400" />
             </span>
             <span className="text-lg font-black text-purple-400 font-mono">
@@ -355,7 +419,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           <PermissionGuard permission="view_cost_prices">
             <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
               <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-                <span>تكلفة البضاعة (COGS)</span>
+                <span>تكلفة البضاعة المباعة</span>
                 <Layers className="w-4 h-4 text-amber-400" />
               </span>
               <span className="text-lg font-black text-amber-400 font-mono">
@@ -367,7 +431,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           <PermissionGuard permission="view_profit">
             <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
               <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-                <span>أرباح الوردية</span>
+                <span>مجمل الأرباح</span>
                 <Sparkles className="w-4 h-4 text-emerald-400" />
               </span>
               <span className="text-lg font-black text-emerald-400 font-mono">
@@ -378,7 +442,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>مرتجعات الوردية</span>
+              <span>قيمة المرتجعات</span>
               <RotateCcw className="w-4 h-4 text-rose-400" />
             </span>
             <span className="text-lg font-black text-rose-400 font-mono">
@@ -388,7 +452,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>مصروفات الوردية</span>
+              <span>المصروفات التشغيلية</span>
               <CircleDollarSign className="w-4 h-4 text-rose-400" />
             </span>
             <span className="text-lg font-black text-rose-400 font-mono">
@@ -398,7 +462,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>صافي مبيعات الوردية</span>
+              <span>صافي المبيعات (بعد المرتجع)</span>
               <TrendingUp className="w-4 h-4 text-indigo-400" />
             </span>
             <span className="text-lg font-black text-indigo-400 font-mono">
@@ -409,7 +473,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           <PermissionGuard permission="view_profit">
             <Card className="p-4 bg-gradient-to-br from-emerald-950 to-slate-900 border-emerald-800/80 space-y-1 shadow-lg shadow-emerald-600/10">
               <span className="text-[11px] text-emerald-300 font-bold block flex items-center justify-between">
-                <span>صافي ربح الوردية النهائي</span>
+                <span>صافي الربح النهائي *</span>
                 <Crown className="w-4 h-4 text-amber-400" />
               </span>
               <span className="text-lg font-black text-emerald-300 font-mono">
@@ -543,54 +607,54 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
         </div>
       )}
 
-      {/* LIVE CASHIER ACTIVITY FEED - VISIBLE TO OWNER ONLY */}
-      {user?.roleCode === 'owner' && (
-        <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
-          <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2">
-              <Activity className="w-5 h-5 text-emerald-400" />
-              <h3 className="text-sm font-bold text-white">سجل العمليات والأنشطة اللحظية للكاشير (Live Cashier Audit Feed)</h3>
-            </div>
-            <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800/60 font-bold flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-              <span>مراقبة لحظية من منظور المالك</span>
-            </span>
+      {/* LIVE CASHIER ACTIVITY FEED */}
+      <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
+        <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Activity className="w-5 h-5 text-emerald-400" />
+            <h3 className="text-sm font-bold text-white">
+              {isCashierRole ? 'سجل العمليات والأنشطة الخاصة بك' : 'سجل العمليات والأنشطة اللحظية للكاشير (Live Audit Feed)'}
+            </h3>
           </div>
+          <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800/60 font-bold flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            <span>مراقبة لحظية</span>
+          </span>
+        </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto custom-scrollbar">
-            {recentActivities.length === 0 ? (
-              <p className="text-xs text-slate-500 text-center col-span-2 py-6">لا توجد حركات كاشير مسجلة حالياً</p>
-            ) : (
-              recentActivities.map((act) => (
-                <div
-                  key={act.id}
-                  className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-xs hover:border-slate-700 transition-colors"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${
-                        act.type === 'sale' ? 'bg-emerald-400' : act.type === 'expense' ? 'bg-rose-400' : 'bg-amber-400'
-                      }`} />
-                      <span className="font-bold text-slate-100">{act.title}</span>
-                    </div>
-                    <span className="text-[11px] text-slate-400 block">{act.subtitle}</span>
-                    <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
-                      <span>المنفذ: <strong className="text-indigo-300">{act.performer}</strong></span>
-                      <span>الوقت: {new Date(act.timestamp).toLocaleTimeString('ar-EG')}</span>
-                    </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto custom-scrollbar">
+          {recentActivities.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center col-span-2 py-6">لا توجد حركات كاشير مسجلة حالياً</p>
+          ) : (
+            recentActivities.map((act) => (
+              <div
+                key={act.id}
+                className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-xs hover:border-slate-700 transition-colors"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${
+                      act.type === 'sale' ? 'bg-emerald-400' : act.type === 'expense' ? 'bg-rose-400' : 'bg-amber-400'
+                    }`} />
+                    <span className="font-bold text-slate-100">{act.title}</span>
                   </div>
-
-                  <div className="text-left font-mono font-bold text-sm">
-                    <span className={act.type === 'sale' ? 'text-emerald-400' : act.type === 'expense' ? 'text-rose-400' : 'text-amber-400'}>
-                      {act.type === 'expense' ? '-' : '+'}{act.amount.toFixed(2)} ج.م
-                    </span>
+                  <span className="text-[11px] text-slate-400 block">{act.subtitle}</span>
+                  <div className="flex items-center gap-3 text-[10px] text-slate-500 font-bold">
+                    <span>المنفذ: <strong className="text-indigo-300">{act.performer}</strong></span>
+                    <span>الوقت: {new Date(act.timestamp).toLocaleTimeString('ar-EG')}</span>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        </Card>
-      )}
+
+                <div className="text-left font-mono font-bold text-sm">
+                  <span className={act.type === 'sale' ? 'text-emerald-400' : act.type === 'expense' ? 'text-rose-400' : 'text-amber-400'}>
+                    {act.type === 'expense' ? '-' : '+'}{act.amount.toFixed(2)} ج.م
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
     </div>
   );
 };

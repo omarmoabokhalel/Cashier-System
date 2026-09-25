@@ -143,13 +143,13 @@ export const App: React.FC = () => {
 
               {activeNav === 'suppliers' && (
                 <ProtectedRoute requiredPermission="manage_suppliers">
-                  <SuppliersShell />
+                  <PurchasesShell initialTab="suppliers" />
                 </ProtectedRoute>
               )}
 
               {activeNav === 'purchases' && (
                 <ProtectedRoute requiredPermission="manage_purchases">
-                  <PurchasesShell />
+                  <PurchasesShell initialTab="orders" />
                 </ProtectedRoute>
               )}
 

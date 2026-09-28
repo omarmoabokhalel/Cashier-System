@@ -643,20 +643,6 @@ export const POSShell: React.FC = () => {
     setIsProcessingSale(true);
 
     try {
-      // Validate that no item in cart is below min_selling_price
-      for (const item of cart) {
-        const netUnitPrice = item.unitPrice - (item.discountAmount / (item.quantity || 1));
-        const minPrice = item.minSellingPrice || 0;
-        if (minPrice > 0 && netUnitPrice < minPrice) {
-          showToast(
-            'error',
-            'عملية مرفوضة',
-            `المنتج "${item.productNameAr}" سعره الصافي (${netUnitPrice.toFixed(2)} ج.م) أقل من الحد الأدنى المسموح به للبيع (${minPrice.toFixed(2)} ج.م)`
-          );
-          setIsProcessingSale(false);
-          return;
-        }
-      }
       // Dynamic shift ID fallback or open auto shift
       let shiftId = '00000000-0000-0000-0000-000000000001';
       const { data: openShiftData } = await (supabase.from('cashier_shifts') as any)

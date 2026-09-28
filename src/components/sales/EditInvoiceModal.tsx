@@ -231,18 +231,6 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
       return;
     }
 
-    // Check minimum selling price rules
-    for (const item of items) {
-      if (item.minSellingPrice > 0 && item.unitPrice < item.minSellingPrice) {
-        showToast(
-          'error',
-          'سعر البيع مخالف',
-          `المنتج "${item.productName}" سعر البيع (${item.unitPrice} ج.م) أقل من الحد الأدنى المسموح (${item.minSellingPrice} ج.م)`
-        );
-        return;
-      }
-    }
-
     setLoading(true);
     try {
       const defaultBranchId = sale.branch_id || '00000000-0000-0000-0000-000000000001';

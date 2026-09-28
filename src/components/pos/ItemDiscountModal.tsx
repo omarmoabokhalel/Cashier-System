@@ -48,9 +48,6 @@ export const ItemDiscountModal: React.FC<ItemDiscountModalProps> = ({
   const isBelowMin = minSellingPrice > 0 && netUnitPrice < minSellingPrice;
 
   const handleSave = () => {
-    if (isBelowMin) {
-      return; // Block save if below min selling price
-    }
     onSaveItem({
       ...item,
       quantity,
@@ -153,10 +150,10 @@ export const ItemDiscountModal: React.FC<ItemDiscountModalProps> = ({
           />
         </div>
 
-        {/* Error Warning if below min price */}
+        {/* Informative Warning if below min price */}
         {isBelowMin && (
-          <div className="p-2.5 bg-rose-950/80 border border-rose-500/50 rounded-xl text-rose-300 text-xs font-bold text-center">
-            ⚠️ خطأ: السعر الصافي للقطعة ({netUnitPrice.toFixed(2)} ج.م) أقل من الحد الأدنى للبيع ({minSellingPrice.toFixed(2)} ج.م). غير مسموح بالبيع!
+          <div className="p-2.5 bg-amber-950/60 border border-amber-500/40 rounded-xl text-amber-300 text-xs font-semibold text-center">
+            ℹ️ تنبيه: السعر الصافي للقطعة ({netUnitPrice.toFixed(2)} ج.م) أقل من الحد الأدنى المسجل بالسيستم ({minSellingPrice.toFixed(2)} ج.م)
           </div>
         )}
 
@@ -180,7 +177,7 @@ export const ItemDiscountModal: React.FC<ItemDiscountModalProps> = ({
           <Button variant="secondary" onClick={onClose}>
             إلغاء
           </Button>
-          <Button variant="primary" onClick={handleSave} disabled={isBelowMin}>
+          <Button variant="primary" onClick={handleSave}>
             حفظ التغييرات
           </Button>
         </div>

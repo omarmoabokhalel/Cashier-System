@@ -982,7 +982,9 @@ export const POSShell: React.FC = () => {
               <h3 className="text-sm font-bold text-white">سلة الفاتورة الحالية</h3>
             </div>
             <div className="flex items-center gap-1.5">
-              <Badge variant="primary" size="sm">{cart.length} أصناف</Badge>
+              <Badge variant="primary" size="sm" className="bg-indigo-950 border border-indigo-700 text-indigo-300 font-bold">
+                {cart.length} أصناف ({cart.reduce((sum, item) => sum + (item.quantity || 0), 0)} قطعة)
+              </Badge>
               {cart.length > 0 && (
                 <button
                   onClick={clearCart}
@@ -1130,6 +1132,10 @@ export const POSShell: React.FC = () => {
           {/* TOTALS & ACTION BUTTONS */}
           <div className="p-3 bg-slate-950 border-t border-slate-800 space-y-3">
             <div className="space-y-1 text-xs text-slate-300">
+              <div className="flex justify-between text-slate-400 text-[11px] pb-1 border-b border-slate-900">
+                <span>عدد الأصناف والقطع:</span>
+                <span className="font-bold text-indigo-300">{cart.length} أصناف ({cart.reduce((sum, item) => sum + (item.quantity || 0), 0)} قطعة)</span>
+              </div>
               <div className="flex justify-between text-slate-400">
                 <span>المجموع الفرعي:</span>
                 <span className="font-mono">{subtotal.toFixed(2)} ج.م</span>

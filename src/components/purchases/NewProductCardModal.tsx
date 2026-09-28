@@ -145,8 +145,8 @@ export const NewProductCardModal: React.FC<NewProductCardModalProps> = ({
       const finalBarcode = finalCode.length >= 6 ? finalCode : `62810000${finalCode.padStart(4, '0')}`;
       const cost = parseFloat(costPrice) || 0;
       const selling = parseFloat(sellingPrice) || 0;
-      // Minimum selling price is optional! If empty, default to selling price
-      const minSelling = minSellingPrice.trim() ? parseFloat(minSellingPrice) : selling;
+      // Minimum selling price is optional! If empty or 0, default to 0
+      const minSelling = minSellingPrice.trim() !== '' ? (parseFloat(minSellingPrice) || 0) : 0;
 
       // 1. Insert product record into `products`
       const productPayload = {

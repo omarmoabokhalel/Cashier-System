@@ -196,7 +196,7 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
         setBrandId(initialProduct.brand_id || '');
         setBasePrice(initialProduct.base_price?.toString() || '0');
         setCostPrice(initialProduct.cost_price?.toString() || '0');
-        setMinSellingPrice(initialProduct.min_selling_price?.toString() || initialProduct.base_price?.toString() || '0');
+        setMinSellingPrice(initialProduct.min_selling_price !== undefined && initialProduct.min_selling_price !== null ? initialProduct.min_selling_price.toString() : '0');
         setMinStockAlert(initialProduct.min_stock_alert?.toString() || '5');
         setIsActive(initialProduct.is_active ?? true);
         setImageUrl(initialProduct.image_url || null);
@@ -457,7 +457,7 @@ export const ProductFormModal: React.FC<ProductFormModalProps> = ({
       const finalBarcode = barcode.trim() || (finalProductCode.length >= 6 ? finalProductCode : `62810000${finalProductCode.padStart(4, '0')}`);
       const finalCost = parseFloat(costPrice) || 0;
       const finalSelling = parseFloat(basePrice) || 0;
-      const finalMinSelling = parseFloat(minSellingPrice) || finalSelling;
+      const finalMinSelling = minSellingPrice.trim() !== '' ? (parseFloat(minSellingPrice) || 0) : 0;
 
       const productPayload = {
         name_ar: nameAr.trim(),

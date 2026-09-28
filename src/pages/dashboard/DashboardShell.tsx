@@ -28,6 +28,8 @@ import {
 
 import { useAuthStore } from '../../store/useAuthStore';
 import { PermissionGuard } from '../../components/auth/PermissionGuard';
+import { CloseDayModal } from '../../components/register/CloseDayModal';
+import { DailyCloseReportModal } from '../../components/register/DailyCloseReportModal';
 
 interface DashboardMetrics {
   sales_today: number;
@@ -75,6 +77,8 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [ownerMetrics, setOwnerMetrics] = useState<OwnerMetrics | null>(null);
   const [recentActivities, setRecentActivities] = useState<CashierActivityItem[]>([]);
+  const [showCloseDayModal, setShowCloseDayModal] = useState(false);
+  const [dailyReportData, setDailyReportData] = useState<any | null>(null);
 
   useEffect(() => {
     loadDashboardData();
@@ -448,6 +452,16 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           </PermissionGuard>
 
           <Button
+            onClick={() => setShowCloseDayModal(true)}
+            size="lg"
+            variant="outline"
+            className="border-amber-500/40 hover:bg-amber-500/10 text-amber-300 font-bold gap-2 shadow-lg"
+          >
+            <PieChart className="w-5 h-5 text-amber-400" />
+            <span>تقفيل اليوم والتقرير</span>
+          </Button>
+
+          <Button
             onClick={() => onNavigate('pos')}
             size="lg"
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold gap-2 shadow-xl shadow-emerald-600/20"
@@ -753,6 +767,22 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
           )}
         </div>
       </Card>
+
+      <CloseDayModal
+        isOpen={showCloseDayModal}
+        onClose={() => setShowCloseDayModal(false)}
+        onOpenReport={(reportData: any) => {
+          setDailyReportData(reportData);
+          setShowCloseDayModal(false);
+          loadDashboardData();
+        }}
+      />
+
+      <DailyCloseReportModal
+        isOpen={!!dailyReportData}
+        reportData={dailyReportData}
+        onClose={() => setDailyReportData(null)}
+      />
     </div>
   );
 };

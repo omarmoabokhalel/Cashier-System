@@ -30,6 +30,8 @@ import {
 } from 'lucide-react';
 import { ReceiptPrintModal } from '../../components/pos/ReceiptPrintModal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { CloseDayModal } from '../../components/register/CloseDayModal';
+import { DailyCloseReportModal } from '../../components/register/DailyCloseReportModal';
 
 import { useAuthStore } from '../../store/useAuthStore';
 
@@ -97,6 +99,11 @@ export const RegisterShell: React.FC = () => {
     notes: '',
   });
   const [isSubmittingEditShift, setIsSubmittingEditShift] = useState(false);
+
+  // Close Day Workflow & Daily Report Modal State
+  const [isCloseDayModalOpen, setIsCloseDayModalOpen] = useState(false);
+  const [dailyCloseReportData, setDailyCloseReportData] = useState<any | null>(null);
+  const [isDailyCloseReportModalOpen, setIsDailyCloseReportModalOpen] = useState(false);
 
   // Delete Shift State
   const [shiftToDelete, setShiftToDelete] = useState<any | null>(null);
@@ -276,9 +283,10 @@ export const RegisterShell: React.FC = () => {
 
     setIsClosingShift(true);
     try {
+      const finalCounted = countedCash.trim() !== '' ? (parseFloat(countedCash) || 0) : expectedCash;
       const { data, error }: { data: any; error: any } = await (supabase.rpc as any)('rpc_close_cashier_shift', {
         p_shift_id: activeShift.id,
-        p_closing_balance_counted: countedNum,
+        p_closing_balance_counted: finalCounted,
         p_notes: closeNotes.trim() || null,
       });
 
@@ -468,6 +476,15 @@ export const RegisterShell: React.FC = () => {
             >
               <Lock className="w-4 h-4" />
               <span>إغلاق الوردية الحالية</span>
+            </Button>
+
+            <Button
+              onClick={() => setIsCloseDayModalOpen(true)}
+              variant="primary"
+              className="bg-purple-600 hover:bg-purple-500 text-white font-bold gap-2 text-xs shadow-lg shadow-purple-600/20"
+            >
+              <FileText className="w-4 h-4" />
+              <span>تقفيل اليوم والتقرير الشامل</span>
             </Button>
           </div>
         ) : (
@@ -1018,6 +1035,24 @@ export const RegisterShell: React.FC = () => {
         cancelText="إلغاء"
         isLoading={isDeletingShift}
         variant="danger"
+      />
+
+      {/* CLOSE DAY WORKFLOW MODAL */}
+      <CloseDayModal
+        isOpen={isCloseDayModalOpen}
+        onClose={() => setIsCloseDayModalOpen(false)}
+        onOpenReport={(data) => {
+          setDailyCloseReportData(data);
+          setIsDailyCloseReportModalOpen(true);
+          fetchShiftData();
+        }}
+      />
+
+      {/* DAILY CLOSE REPORT MODAL */}
+      <DailyCloseReportModal
+        isOpen={isDailyCloseReportModalOpen}
+        onClose={() => setIsDailyCloseReportModalOpen(false)}
+        reportData={dailyCloseReportData}
       />
     </div>
   );

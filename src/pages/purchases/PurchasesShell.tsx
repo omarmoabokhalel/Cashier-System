@@ -347,7 +347,7 @@ export const PurchasesShell: React.FC<PurchasesShellProps> = ({ initialTab = 'or
           quantity: i.quantity,
           unit_cost_price: i.wholesalePrice,
           selling_price: i.sellingPrice,
-          min_selling_price: i.minSellingPrice || i.sellingPrice,
+          min_selling_price: i.minSellingPrice !== undefined && i.minSellingPrice !== null ? Number(i.minSellingPrice) : 0,
           total_cost: i.quantity * i.wholesalePrice,
         })),
       };
@@ -387,7 +387,7 @@ export const PurchasesShell: React.FC<PurchasesShellProps> = ({ initialTab = 'or
         quantity: pi.quantity_ordered || pi.quantity_received || 1,
         wholesalePrice: Number(pi.unit_cost_price || pv.cost_price || 0),
         sellingPrice: Number(pv.selling_price || 0),
-        minSellingPrice: Number(pv.min_selling_price || pv.selling_price || 0),
+        minSellingPrice: Number(pv.min_selling_price ?? 0),
       };
     });
     setEditPoItemsDraft(items);
@@ -431,7 +431,7 @@ export const PurchasesShell: React.FC<PurchasesShellProps> = ({ initialTab = 'or
           .update({
             cost_price: item.wholesalePrice,
             selling_price: item.sellingPrice,
-            min_selling_price: item.minSellingPrice || item.sellingPrice,
+            min_selling_price: item.minSellingPrice !== undefined && item.minSellingPrice !== null ? Number(item.minSellingPrice) : 0,
           })
           .eq('id', item.variantId);
       }

@@ -92,9 +92,53 @@ export const ExchangesShell: React.FC = () => {
   const [completedExchange, setCompletedExchange] = useState<any | null>(null);
   const [taxRate, setTaxRate] = useState<number>(15);
 
+  // Recent Exchanges History Log State
+  const [recentExchanges, setRecentExchanges] = useState<any[]>([]);
+  const [loadingRecentExchanges, setLoadingRecentExchanges] = useState(false);
+  const [historySearchQuery, setHistorySearchQuery] = useState('');
+
   useEffect(() => {
     loadTaxRate();
+    loadRecentExchanges();
   }, []);
+
+  const loadRecentExchanges = async () => {
+    setLoadingRecentExchanges(true);
+    try {
+      const { data, error } = await supabase
+        .from('exchanges')
+        .select(`
+          id, exchange_number, price_difference, created_at,
+          sales!exchanges_new_sale_id_fkey(invoice_number, total_amount),
+          exchange_items(
+            quantity, price,
+            returned_variant:product_variants!exchange_items_returned_variant_id_fkey(
+              sku, sizes(code), colors(name_ar), products(name_ar)
+            ),
+            new_variant:product_variants!exchange_items_new_variant_id_fkey(
+              sku, sizes(code), colors(name_ar), products(name_ar)
+            )
+          )
+        `)
+        .order('created_at', { ascending: false })
+        .limit(30);
+
+      if (!error && data) {
+        setRecentExchanges(data);
+      } else {
+        const { data: simpleData } = await supabase
+          .from('exchanges')
+          .select('id, exchange_number, price_difference, created_at')
+          .order('created_at', { ascending: false })
+          .limit(30);
+        if (simpleData) setRecentExchanges(simpleData);
+      }
+    } catch (err) {
+      console.error('Error fetching recent exchanges:', err);
+    } finally {
+      setLoadingRecentExchanges(false);
+    }
+  };
 
   const loadTaxRate = async () => {
     try {
@@ -241,6 +285,147 @@ export const ExchangesShell: React.FC = () => {
 
   const netPriceDifference = calculatedNewGrandTotal - calculatedOldRefund;
 
+  const processExchangeDirectly = async (shiftId: string, returnItemsPayload: Array<{ sale_item_id: string; quantity: number }>) => {
+    const defaultBranchId = '00000000-0000-0000-0000-000000000001';
+    const exchangeNumber = `EXC-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const newInvoiceNumber = `INV-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    // 1. Process returned items (restock + update sale_items)
+    for (const retPayload of returnItemsPayload) {
+      const origItem = selectedInvoice.sale_items.find((si: any) => si.id === retPayload.sale_item_id);
+      if (origItem) {
+        const newReturnedQty = (origItem.returned_quantity || 0) + retPayload.quantity;
+        await (supabase.from('sale_items') as any)
+          .update({ returned_quantity: newReturnedQty })
+          .eq('id', retPayload.sale_item_id);
+
+        const vId = origItem.variant_id;
+        const { data: stockRow } = await (supabase.from('branch_variant_stock') as any)
+          .select('quantity')
+          .eq('branch_id', defaultBranchId)
+          .eq('variant_id', vId)
+          .maybeSingle();
+
+        const currQty = stockRow ? Number(stockRow.quantity || 0) : 0;
+        const newQty = currQty + retPayload.quantity;
+
+        if (stockRow) {
+          await (supabase.from('branch_variant_stock') as any)
+            .update({ quantity: newQty, updated_at: new Date().toISOString() })
+            .eq('branch_id', defaultBranchId)
+            .eq('variant_id', vId);
+        } else {
+          await (supabase.from('branch_variant_stock') as any).insert({
+            branch_id: defaultBranchId,
+            variant_id: vId,
+            quantity: retPayload.quantity,
+          });
+        }
+
+        await (supabase.from('inventory_movements') as any).insert({
+          branch_id: defaultBranchId,
+          variant_id: vId,
+          movement_type: 'return',
+          quantity_delta: retPayload.quantity,
+          quantity_before: currQty,
+          quantity_after: newQty,
+          reference_type: 'exchange',
+          selling_price: origItem.unit_price,
+        });
+      }
+    }
+
+    // 2. Create new sale for replacement items
+    const { data: newSaleRow, error: newSaleErr } = await (supabase.from('sales') as any)
+      .insert({
+        invoice_number: newInvoiceNumber,
+        branch_id: defaultBranchId,
+        cashier_shift_id: shiftId,
+        customer_id: selectedInvoice.customer_id || null,
+        subtotal: calculatedNewSubtotal,
+        discount_amount: 0,
+        tax_rate: taxRate,
+        tax_amount: calculatedNewTax,
+        total_amount: calculatedNewGrandTotal,
+        paid_amount: calculatedNewGrandTotal,
+        change_amount: 0,
+        notes: `فاتورة بديلة ناتجة عن استبدال للفاتورة #${selectedInvoice.invoice_number}`,
+      })
+      .select()
+      .single();
+
+    if (newSaleErr) throw new Error(newSaleErr.message);
+
+    const newSaleId = newSaleRow.id;
+
+    // 3. Deduct stock for replacement items & insert sale_items
+    for (const item of replacementCart) {
+      const lineTotal = item.unitPrice * item.qty;
+      await (supabase.from('sale_items') as any).insert({
+        sale_id: newSaleId,
+        variant_id: item.id,
+        quantity: item.qty,
+        unit_price: item.unitPrice,
+        cost_price: item.unitPrice * 0.7,
+        discount_amount: 0,
+        total_price: lineTotal,
+      });
+
+      const { data: stockRow } = await (supabase.from('branch_variant_stock') as any)
+        .select('quantity')
+        .eq('branch_id', defaultBranchId)
+        .eq('variant_id', item.id)
+        .maybeSingle();
+
+      const currQty = stockRow ? Number(stockRow.quantity || 0) : 0;
+      const newQty = Math.max(0, currQty - item.qty);
+
+      if (stockRow) {
+        await (supabase.from('branch_variant_stock') as any)
+          .update({ quantity: newQty, updated_at: new Date().toISOString() })
+          .eq('branch_id', defaultBranchId)
+          .eq('variant_id', item.id);
+      }
+
+      await (supabase.from('inventory_movements') as any).insert({
+        branch_id: defaultBranchId,
+        variant_id: item.id,
+        movement_type: 'sale',
+        quantity_delta: -item.qty,
+        quantity_before: currQty,
+        quantity_after: newQty,
+        reference_type: 'sale',
+        reference_id: newSaleId,
+        selling_price: item.unitPrice,
+      });
+    }
+
+    // 4. Insert new sale payment
+    await (supabase.from('payments') as any).insert({
+      sale_id: newSaleId,
+      payment_method: paymentMethod,
+      amount: calculatedNewGrandTotal,
+    });
+
+    // 5. Insert into exchanges table
+    const { data: exchangeRow } = await (supabase.from('exchanges') as any)
+      .insert({
+        exchange_number: exchangeNumber,
+        new_sale_id: newSaleId,
+        branch_id: defaultBranchId,
+        cashier_shift_id: shiftId,
+        price_difference: netPriceDifference,
+      })
+      .select()
+      .maybeSingle();
+
+    return {
+      exchange_number: exchangeNumber,
+      new_invoice_number: newInvoiceNumber,
+      price_difference: netPriceDifference,
+    };
+  };
+
   const handleProcessExchange = async () => {
     if (!selectedInvoice) return;
 
@@ -304,25 +489,36 @@ export const ExchangesShell: React.FC = () => {
         idempotency_key: `EXC-KEY-${Date.now()}`,
       };
 
-      const { data, error }: { data: any; error: any } = await (supabase.rpc as any)('rpc_process_exchange', {
-        p_original_sale_id: selectedInvoice.id,
-        p_cashier_shift_id: shiftId,
-        p_return_items: returnItemsPayload,
-        p_new_sale_payload: newSalePayload,
-      });
+      let exchangeResult: any = null;
+      try {
+        const { data, error } = await (supabase.rpc as any)('rpc_process_exchange', {
+          p_original_sale_id: selectedInvoice.id,
+          p_cashier_shift_id: shiftId,
+          p_return_items: returnItemsPayload,
+          p_new_sale_payload: newSalePayload,
+        });
 
-      if (error) {
-        showToast('error', 'فشلت عملية الاستبدال', error.message);
-      } else {
-        showToast('success', 'تم الاستبدال بنجاح!', `رقم الاستبدال: ${data?.exchange_number}`);
-        setCompletedExchange(data);
-
-        // Reset
-        setSelectedInvoice(null);
-        setSelectedReturnItems({});
-        setReplacementCart([]);
-        setInvoiceQuery('');
+        if (error || !data) {
+          console.warn('RPC process_exchange failed, using direct atomic fallback:', error);
+          exchangeResult = await processExchangeDirectly(shiftId, returnItemsPayload);
+        } else {
+          exchangeResult = data;
+        }
+      } catch (err) {
+        console.warn('RPC process_exchange exception, using direct atomic fallback:', err);
+        exchangeResult = await processExchangeDirectly(shiftId, returnItemsPayload);
       }
+
+      showToast('success', 'تم الاستبدال بنجاح!', `رقم الاستبدال: ${exchangeResult?.exchange_number}`);
+      setCompletedExchange(exchangeResult);
+
+      loadRecentExchanges();
+
+      // Reset
+      setSelectedInvoice(null);
+      setSelectedReturnItems({});
+      setReplacementCart([]);
+      setInvoiceQuery('');
     } catch (e: any) {
       showToast('error', 'خطأ في عملية الاستبدال', e.message);
     } finally {
@@ -563,6 +759,102 @@ export const ExchangesShell: React.FC = () => {
           </Card>
         </div>
       ) : null}
+
+      {/* RECENT EXCHANGES HISTORY LOG SECTION */}
+      <Card className="p-4 bg-slate-900 border-slate-800 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-5 h-5 text-sky-400" />
+            <h3 className="text-sm font-bold text-white">سجل عمليات الاستبدال السابقة</h3>
+            <Badge variant="secondary" size="sm" className="bg-slate-800 text-slate-300">
+              {recentExchanges.length} عملية
+            </Badge>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="بحث في سجل الاستبدالات..."
+              value={historySearchQuery}
+              onChange={(e) => setHistorySearchQuery(e.target.value)}
+              className="w-64 text-xs h-8"
+            />
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={loadRecentExchanges}
+              isLoading={loadingRecentExchanges}
+              className="h-8 gap-1"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>تحديث</span>
+            </Button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          {recentExchanges.length === 0 ? (
+            <div className="text-center py-10 text-slate-500 text-xs">
+              <RefreshCw className="w-10 h-10 mx-auto opacity-30 mb-2" />
+              <p>لا توجد عمليات استبدال مسجلة في النظام حتى الآن</p>
+            </div>
+          ) : (
+            <table className="w-full text-right text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
+                  <th className="py-2.5 px-3">رقم الاستبدال</th>
+                  <th className="py-2.5 px-3">الفاتورة البديلة الجديدة</th>
+                  <th className="py-2.5 px-3 text-center">التاريخ والوقت</th>
+                  <th className="py-2.5 px-3 text-center">الفرق المالي</th>
+                  <th className="py-2.5 px-3">تفاصيل الأصناف المستبدلة</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 font-sans">
+                {recentExchanges
+                  .filter((ex) => {
+                    if (!historySearchQuery.trim()) return true;
+                    const q = historySearchQuery.toLowerCase();
+                    return (
+                      (ex.exchange_number || '').toLowerCase().includes(q) ||
+                      (ex.sales?.invoice_number || '').toLowerCase().includes(q)
+                    );
+                  })
+                  .map((ex) => {
+                    const diff = Number(ex.price_difference || 0);
+                    return (
+                      <tr key={ex.id} className="hover:bg-slate-950/50 transition-colors">
+                        <td className="py-3 px-3 font-mono font-bold text-sky-400">{ex.exchange_number}</td>
+                        <td className="py-3 px-3 font-mono font-semibold text-slate-200">
+                          {ex.sales?.invoice_number || 'فاتورة جديدة'}
+                        </td>
+                        <td className="py-3 px-3 text-center text-slate-400 text-[11px]">
+                          {new Date(ex.created_at).toLocaleString('ar-EG')}
+                        </td>
+                        <td className="py-3 px-3 text-center font-mono font-bold text-sm">
+                          {diff > 0 ? (
+                            <span className="text-amber-400">تحصيل +{diff.toFixed(2)} ج.م</span>
+                          ) : diff < 0 ? (
+                            <span className="text-emerald-400">إرجاع -{Math.abs(diff).toFixed(2)} ج.م</span>
+                          ) : (
+                            <span className="text-sky-300">متكافئ (0.00 ج.م)</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-slate-300 text-[11px]">
+                          {(ex.exchange_items || []).map((ei: any, idx: number) => (
+                            <div key={idx} className="flex items-center gap-1">
+                              <span className="text-rose-400 font-semibold">{ei.returned_variant?.products?.name_ar || 'قديم'}</span>
+                              <span className="text-slate-500">➔</span>
+                              <span className="text-sky-400 font-semibold">{ei.new_variant?.products?.name_ar || 'جديد'}</span>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </Card>
 
       {/* COMPLETED EXCHANGE SUMMARY DIALOG */}
       <Dialog

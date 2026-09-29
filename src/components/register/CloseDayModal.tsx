@@ -120,10 +120,17 @@ export const CloseDayModal: React.FC<CloseDayModalProps> = ({
       // 3. Fetch returns today
       let returnsSum = 0;
       try {
-        const { data: retData } = await (supabase.from('sale_returns') as any)
+        const { data: retData, error: retErr } = await (supabase.from('returns') as any)
           .select('refund_amount, created_at')
           .gte('created_at', `${todayStr}T00:00:00`);
-        returnsSum = (retData || []).reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+        if (!retErr && retData && retData.length > 0) {
+          returnsSum = retData.reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+        } else {
+          const { data: altData } = await (supabase.from('sale_returns') as any)
+            .select('refund_amount, created_at')
+            .gte('created_at', `${todayStr}T00:00:00`);
+          returnsSum = (altData || []).reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+        }
       } catch (e) {}
 
       // 4. Fetch expenses today

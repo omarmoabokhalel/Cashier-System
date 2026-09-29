@@ -68,24 +68,23 @@ export async function reconcileShiftTotals(shiftId: string): Promise<ReconciledS
     // 3. Query returns for this shift
     let totalReturnsCash = 0;
     try {
-      const { data: returnsData } = await (supabase.from('sale_returns') as any)
-        .select('id, refund_amount, total_amount, cashier_shift_id, created_at')
+      const { data: returnsData, error: retErr } = await (supabase.from('returns') as any)
+        .select('id, refund_amount, cashier_shift_id, created_at')
         .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
 
-      (returnsData || []).forEach((r: any) => {
-        totalReturnsCash += Number(r.refund_amount || r.total_amount || 0);
-      });
-    } catch (e) {
-      try {
-        const { data: returnsData } = await (supabase.from('returns') as any)
-          .select('id, refund_amount, total_amount, cashier_shift_id, created_at')
-          .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
-
-        (returnsData || []).forEach((r: any) => {
-          totalReturnsCash += Number(r.refund_amount || r.total_amount || 0);
+      if (!retErr && returnsData && returnsData.length > 0) {
+        returnsData.forEach((r: any) => {
+          totalReturnsCash += Number(r.refund_amount || 0);
         });
-      } catch (err) {}
-    }
+      } else {
+        const { data: altData } = await (supabase.from('sale_returns') as any)
+          .select('id, refund_amount, cashier_shift_id, created_at')
+          .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
+        (altData || []).forEach((r: any) => {
+          totalReturnsCash += Number(r.refund_amount || 0);
+        });
+      }
+    } catch (e) {}
 
     // 4. Query expenses for this shift
     let totalExpenses = 0;

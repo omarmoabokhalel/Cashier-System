@@ -339,12 +339,27 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
       // Fetch Returns
       let returnsTotalAmt = 0;
       try {
-        let retQuery = supabase.from('sale_returns').select('refund_amount');
+        let retQuery = supabase.from('returns').select('refund_amount');
         if (currentShift) {
           retQuery = retQuery.eq('cashier_shift_id', currentShift.id);
+        } else {
+          retQuery = retQuery.gte('created_at', todayStr);
         }
-        const { data: retData } = await (retQuery as any);
-        returnsTotalAmt = (retData || []).reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+        const { data: retData, error: retErr } = await (retQuery as any);
+        if (!retErr && retData && retData.length > 0) {
+          returnsTotalAmt = retData.reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+        } else {
+          // Fallback to sale_returns view if table name differs
+          let altQuery = supabase.from('sale_returns').select('refund_amount');
+          if (currentShift) altQuery = altQuery.eq('cashier_shift_id', currentShift.id);
+          else altQuery = altQuery.gte('created_at', todayStr);
+          const { data: altData } = await (altQuery as any);
+          if (altData && altData.length > 0) {
+            returnsTotalAmt = altData.reduce((sum: number, r: any) => sum + Number(r.refund_amount || 0), 0);
+          } else if (currentShift) {
+            returnsTotalAmt = Number(currentShift.total_returns_cash || 0);
+          }
+        }
       } catch (e) {
         if (currentShift) returnsTotalAmt = Number(currentShift.total_returns_cash || 0);
       }

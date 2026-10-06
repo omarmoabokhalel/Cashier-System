@@ -269,13 +269,27 @@ export const ExchangesShell: React.FC = () => {
   };
 
   // Financial Calculations
+  const sumInvoiceItemsNet = selectedInvoice
+    ? (selectedInvoice.sale_items || []).reduce((sum: number, si: any) => {
+        const itemNet = (si.total_price !== undefined && si.total_price !== null)
+          ? Number(si.total_price)
+          : (Number(si.unit_price || 0) * Number(si.quantity || 1) - Number(si.discount_amount || 0));
+        return sum + Math.max(0, itemNet);
+      }, 0)
+    : 0;
+
+  const invoiceOrderDiscountRatio = (selectedInvoice && sumInvoiceItemsNet > 0 && selectedInvoice.total_amount !== undefined && Number(selectedInvoice.total_amount) < sumInvoiceItemsNet)
+    ? Number(selectedInvoice.total_amount) / sumInvoiceItemsNet
+    : 1;
+
   const calculatedOldRefund = selectedInvoice
     ? selectedInvoice.sale_items.reduce((acc: number, si: any) => {
         const qty = selectedReturnItems[si.id] || 0;
-        const effectiveUnitPrice = si.quantity > 0
-          ? Number(si.unit_price) - (Number(si.discount_amount || 0) / si.quantity)
-          : Number(si.unit_price);
-        return acc + qty * Math.max(0, effectiveUnitPrice);
+        const lineNetUnitPrice = (si.quantity > 0 && si.total_price !== undefined && si.total_price !== null)
+          ? Number(si.total_price) / si.quantity
+          : (si.quantity > 0 ? Number(si.unit_price) - (Number(si.discount_amount || 0) / si.quantity) : Number(si.unit_price));
+        const effectiveUnitPrice = Math.max(0, lineNetUnitPrice * invoiceOrderDiscountRatio);
+        return acc + qty * effectiveUnitPrice;
       }, 0)
     : 0;
 

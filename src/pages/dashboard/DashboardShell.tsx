@@ -367,18 +367,32 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
       // Fetch Expenses
       let expensesTotalAmt = 0;
       try {
-        let expQuery = supabase.from('expenses').select('amount');
         if (currentShift) {
-          expQuery = expQuery.gte('created_at', currentShift.opened_at);
+          const { data: expByShift } = await (supabase.from('expenses') as any)
+            .select('id, amount')
+            .eq('cashier_shift_id', currentShift.id);
+
+          const { data: expByTime } = await (supabase.from('expenses') as any)
+            .select('id, amount')
+            .gte('created_at', currentShift.opened_at);
+
+          const expMap = new Map<string, number>();
+          (expByShift || []).forEach((e: any) => expMap.set(e.id, Number(e.amount || 0)));
+          (expByTime || []).forEach((e: any) => expMap.set(e.id, Number(e.amount || 0)));
+
+          expMap.forEach((amt) => { expensesTotalAmt += amt; });
+        } else {
+          const { data: expData } = await (supabase.from('expenses') as any)
+            .select('amount')
+            .gte('created_at', todayStr);
+          expensesTotalAmt = (expData || []).reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
         }
-        const { data: expData } = await (expQuery as any);
-        expensesTotalAmt = (expData || []).reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
       } catch (e) {
         if (currentShift) expensesTotalAmt = Number(currentShift.total_expenses || 0);
       }
 
-      const netSales = Math.max(0, totalSalesAmt - returnsTotalAmt);
-      const grossProfit = Math.max(0, netSales - netCogs);
+      const netSales = totalSalesAmt - returnsTotalAmt - expensesTotalAmt;
+      const grossProfit = Math.max(0, (totalSalesAmt - returnsTotalAmt) - netCogs);
       const netProfit = grossProfit - expensesTotalAmt;
 
       const topProducts = Object.entries(topProdMap)
@@ -589,7 +603,7 @@ export const DashboardShell: React.FC<{ onNavigate: (page: string) => void }> = 
 
           <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
             <span className="text-[11px] text-slate-400 block flex items-center justify-between">
-              <span>صافي المبيعات (بعد المرتجع)</span>
+              <span>صافي النقدية بالدرج (بعد المرتجعات والمصروفات)</span>
               <TrendingUp className="w-4 h-4 text-indigo-400" />
             </span>
             <span className="text-lg font-black text-indigo-400 font-mono">

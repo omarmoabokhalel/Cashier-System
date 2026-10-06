@@ -36,6 +36,7 @@ interface Expense {
   description: string;
   payee: string | null;
   created_at: string;
+  cashier_shift_id?: string | null;
 }
 
 export const ExpensesShell: React.FC = () => {
@@ -136,23 +137,35 @@ export const ExpensesShell: React.FC = () => {
         shiftId = openShiftData[0].id;
       }
 
-      const { data, error }: { data: any; error: any } = await (supabase.rpc as any)('rpc_record_expense', {
-        p_cashier_shift_id: shiftId,
-        p_category: formData.category,
-        p_amount: amountVal,
-        p_description: formData.description.trim(),
-        p_payee: formData.payee.trim() || null,
-      });
+      let recordSuccess = false;
+      try {
+        const { error } = await (supabase.rpc as any)('rpc_record_expense', {
+          p_cashier_shift_id: shiftId,
+          p_category: formData.category,
+          p_amount: amountVal,
+          p_description: formData.description.trim(),
+          p_payee: formData.payee.trim() || null,
+        });
+        if (!error) recordSuccess = true;
+      } catch (err) {}
 
-      if (error) {
-        showToast('error', 'فشل تسجيل المصروف', error.message);
-      } else {
-        showToast('success', 'تم تسجيل المصروف بنجاح!', `${amountVal.toFixed(2)} ج.م`);
-        reconcileShiftTotals(shiftId).catch(console.error);
-        setIsModalOpen(false);
-        setFormData({ category: 'Electricity', amount: '', description: '', payee: '' });
-        fetchExpenses();
+      if (!recordSuccess) {
+        const { error: directErr } = await (supabase.from('expenses') as any).insert({
+          cashier_shift_id: shiftId,
+          category: formData.category,
+          amount: amountVal,
+          description: formData.description.trim(),
+          payee: formData.payee.trim() || null,
+          created_at: new Date().toISOString(),
+        });
+        if (directErr) throw new Error(directErr.message);
       }
+
+      showToast('success', 'تم تسجيل المصروف بنجاح!', `${amountVal.toFixed(2)} ج.م`);
+      await reconcileShiftTotals(shiftId).catch(console.error);
+      setIsModalOpen(false);
+      setFormData({ category: 'Electricity', amount: '', description: '', payee: '' });
+      fetchExpenses();
     } catch (e: any) {
       showToast('error', 'خطأ أثناء التسجيل', e.message);
     } finally {
@@ -174,6 +187,18 @@ export const ExpensesShell: React.FC = () => {
       created_at: localISO,
     });
     setIsEditModalOpen(true);
+  };
+
+  const getActiveShiftId = async (): Promise<string | null> => {
+    try {
+      const { data } = await (supabase.from('cashier_shifts') as any)
+        .select('id')
+        .eq('status', 'open')
+        .order('opened_at', { ascending: false })
+        .limit(1);
+      if (data && data.length > 0) return data[0].id;
+    } catch (e) {}
+    return null;
   };
 
   const handleUpdateExpense = async (e: React.FormEvent) => {
@@ -209,6 +234,10 @@ export const ExpensesShell: React.FC = () => {
         showToast('error', 'فشل تعديل المصروف', error.message);
       } else {
         showToast('success', 'تم تعديل المصروف بنجاح!');
+        const targetShiftId = editingExpense.cashier_shift_id || await getActiveShiftId();
+        if (targetShiftId) {
+          reconcileShiftTotals(targetShiftId).catch(console.error);
+        }
         setIsEditModalOpen(false);
         setEditingExpense(null);
         fetchExpenses();
@@ -224,6 +253,7 @@ export const ExpensesShell: React.FC = () => {
     if (!expenseToDelete) return;
     setIsDeletingExpense(true);
     try {
+      const targetShiftId = expenseToDelete.cashier_shift_id;
       const { error } = await (supabase.from('expenses') as any)
         .delete()
         .eq('id', expenseToDelete.id);
@@ -231,7 +261,11 @@ export const ExpensesShell: React.FC = () => {
       if (error) {
         showToast('error', 'فشل مسح المصروف', error.message);
       } else {
-        showToast('success', 'تم مسح المصروف بنجاح');
+        showToast('success', 'تم حذف المصروف بنجاح واستعادة النقدية بالخزنة');
+        const shiftIdToReconcile = targetShiftId || await getActiveShiftId();
+        if (shiftIdToReconcile) {
+          await reconcileShiftTotals(shiftIdToReconcile).catch(console.error);
+        }
         setExpenseToDelete(null);
         fetchExpenses();
       }

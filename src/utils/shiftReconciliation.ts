@@ -32,15 +32,23 @@ export async function reconcileShiftTotals(shiftId: string): Promise<ReconciledS
     const shiftOpenedAt = shift.opened_at;
 
     // 2. Query sales for this shift
-    // Match by cashier_shift_id OR sales created during shift window with fallback/null shift ID
-    const { data: salesData } = await (supabase.from('sales') as any)
+    const { data: salesByShift } = await (supabase.from('sales') as any)
       .select('id, total_amount, paid_amount, created_at, cashier_shift_id, payments(payment_method, amount)')
-      .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
+      .eq('cashier_shift_id', shiftId);
+
+    const { data: salesByTime } = await (supabase.from('sales') as any)
+      .select('id, total_amount, paid_amount, created_at, cashier_shift_id, payments(payment_method, amount)')
+      .gte('created_at', shiftOpenedAt);
+
+    const salesMap = new Map<string, any>();
+    (salesByShift || []).forEach((s: any) => salesMap.set(s.id, s));
+    (salesByTime || []).forEach((s: any) => salesMap.set(s.id, s));
+    const salesData = Array.from(salesMap.values());
 
     let totalSalesCash = 0;
     let totalSalesCard = 0;
 
-    (salesData || []).forEach((sale: any) => {
+    salesData.forEach((sale: any) => {
       // Re-assign shift id if it was orphaned or defaulted
       if (sale.cashier_shift_id !== shiftId && sale.id) {
         (supabase.from('sales') as any)
@@ -68,33 +76,52 @@ export async function reconcileShiftTotals(shiftId: string): Promise<ReconciledS
     // 3. Query returns for this shift
     let totalReturnsCash = 0;
     try {
-      const { data: returnsData, error: retErr } = await (supabase.from('returns') as any)
+      const { data: retByShift } = await (supabase.from('returns') as any)
         .select('id, refund_amount, cashier_shift_id, created_at')
-        .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
+        .eq('cashier_shift_id', shiftId);
 
-      if (!retErr && returnsData && returnsData.length > 0) {
-        returnsData.forEach((r: any) => {
-          totalReturnsCash += Number(r.refund_amount || 0);
-        });
-      } else {
-        const { data: altData } = await (supabase.from('sale_returns') as any)
+      const { data: retByTime } = await (supabase.from('returns') as any)
+        .select('id, refund_amount, cashier_shift_id, created_at')
+        .gte('created_at', shiftOpenedAt);
+
+      const combinedRetMap = new Map<string, number>();
+      (retByShift || []).forEach((r: any) => combinedRetMap.set(r.id, Number(r.refund_amount || 0)));
+      (retByTime || []).forEach((r: any) => combinedRetMap.set(r.id, Number(r.refund_amount || 0)));
+
+      if (combinedRetMap.size === 0) {
+        const { data: altByShift } = await (supabase.from('sale_returns') as any)
           .select('id, refund_amount, cashier_shift_id, created_at')
-          .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
-        (altData || []).forEach((r: any) => {
-          totalReturnsCash += Number(r.refund_amount || 0);
-        });
+          .eq('cashier_shift_id', shiftId);
+        const { data: altByTime } = await (supabase.from('sale_returns') as any)
+          .select('id, refund_amount, cashier_shift_id, created_at')
+          .gte('created_at', shiftOpenedAt);
+
+        (altByShift || []).forEach((r: any) => combinedRetMap.set(r.id, Number(r.refund_amount || 0)));
+        (altByTime || []).forEach((r: any) => combinedRetMap.set(r.id, Number(r.refund_amount || 0)));
       }
+
+      combinedRetMap.forEach((amt) => {
+        totalReturnsCash += amt;
+      });
     } catch (e) {}
 
     // 4. Query expenses for this shift
     let totalExpenses = 0;
     try {
-      const { data: expensesData } = await (supabase.from('expenses') as any)
+      const { data: expByShift } = await (supabase.from('expenses') as any)
         .select('id, amount, cashier_shift_id, created_at')
-        .or(`cashier_shift_id.eq.${shiftId},and(cashier_shift_id.eq.00000000-0000-0000-0000-000000000001,created_at.gte.${shiftOpenedAt})`);
+        .eq('cashier_shift_id', shiftId);
 
-      (expensesData || []).forEach((ex: any) => {
-        totalExpenses += Number(ex.amount || 0);
+      const { data: expByTime } = await (supabase.from('expenses') as any)
+        .select('id, amount, cashier_shift_id, created_at')
+        .gte('created_at', shiftOpenedAt);
+
+      const combinedExpMap = new Map<string, number>();
+      (expByShift || []).forEach((ex: any) => combinedExpMap.set(ex.id, Number(ex.amount || 0)));
+      (expByTime || []).forEach((ex: any) => combinedExpMap.set(ex.id, Number(ex.amount || 0)));
+
+      combinedExpMap.forEach((amt) => {
+        totalExpenses += amt;
       });
     } catch (e) {}
 

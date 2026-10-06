@@ -250,11 +250,29 @@ export const ReturnsShell: React.FC = () => {
 
   const selectSale = (sale: any) => {
     setSelectedSale(sale);
+
+    // Sum net totals of all items in the invoice
+    const sumItemsNet = (sale.sale_items || []).reduce((sum: number, si: any) => {
+      const itemNet = (si.total_price !== undefined && si.total_price !== null)
+        ? Number(si.total_price)
+        : (Number(si.unit_price || 0) * Number(si.quantity || 1) - Number(si.discount_amount || 0));
+      return sum + Math.max(0, itemNet);
+    }, 0);
+
+    // If an additional order-level header discount was applied beyond item discounts
+    const orderDiscountRatio = (sumItemsNet > 0 && sale.total_amount !== undefined && Number(sale.total_amount) < sumItemsNet)
+      ? Number(sale.total_amount) / sumItemsNet
+      : 1;
+
     const itemsForm: ReturnItemForm[] = (sale.sale_items || []).map((si: any) => {
       const returnable = si.quantity - (si.returned_quantity || 0);
-      const effectiveUnitPrice = si.quantity > 0
-        ? Number(si.unit_price) - (Number(si.discount_amount || 0) / si.quantity)
-        : Number(si.unit_price);
+
+      // Line item net unit price as sold on the invoice
+      const lineNetUnitPrice = (si.quantity > 0 && si.total_price !== undefined && si.total_price !== null)
+        ? Number(si.total_price) / si.quantity
+        : (si.quantity > 0 ? Number(si.unit_price) - (Number(si.discount_amount || 0) / si.quantity) : Number(si.unit_price));
+
+      const effectiveUnitPrice = Math.max(0, lineNetUnitPrice * orderDiscountRatio);
       const maxReturnable = Math.max(0, returnable);
       return {
         saleItemId: si.id,
@@ -262,7 +280,7 @@ export const ReturnsShell: React.FC = () => {
         productNameAr: si.product_variants?.products?.name_ar || 'منتج',
         sizeCode: si.product_variants?.sizes?.code || 'N/A',
         colorNameAr: si.product_variants?.colors?.name_ar || 'عام',
-        unitPrice: Math.max(0, effectiveUnitPrice),
+        unitPrice: effectiveUnitPrice,
         purchasedQty: si.quantity,
         alreadyReturnedQty: si.returned_quantity || 0,
         returnableQty: maxReturnable,
@@ -450,35 +468,17 @@ export const ReturnsShell: React.FC = () => {
         .map((item) => ({
           sale_item_id: item.saleItemId,
           quantity: item.requestedQty,
+          unit_price: item.unitPrice,
         }));
 
-      let returnResult: any = null;
-      try {
-        const { data, error } = await (supabase.rpc as any)('rpc_process_return', {
-          p_original_sale_id: selectedSale.id,
-          p_cashier_shift_id: shiftId,
-          p_refund_method: refundMethod,
-          p_reason: reason,
-          p_items: itemsPayload,
-        });
-
-        if (error || !data) {
-          console.warn('RPC process_return failed, using direct atomic fallback:', error);
-          returnResult = await processReturnDirectly(shiftId, itemsPayload);
-        } else {
-          returnResult = data;
-        }
-      } catch (err) {
-        console.warn('RPC process_return exception, using direct atomic fallback:', err);
-        returnResult = await processReturnDirectly(shiftId, itemsPayload);
-      }
+      const returnResult = await processReturnDirectly(shiftId, itemsPayload);
 
       showToast('success', 'تم الإرجاع بنجاح!', `رقم المستند: ${returnResult?.return_number}`);
       await reconcileShiftTotals(shiftId).catch(console.error);
 
       setCompletedReturn({
         returnNumber: returnResult?.return_number,
-        refundAmount: returnResult?.refund_amount || totalRefundAmount,
+        refundAmount: totalRefundAmount,
         invoiceNumber: selectedSale.invoice_number,
         itemsCount: itemsPayload.length,
         refundMethod,
